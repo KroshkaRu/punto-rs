@@ -726,54 +726,93 @@ impl Native {
         {
             return self.replace_keyboard(target, before, start..end, replacement, final_layout);
         }
+        // Queue physical input until insertion and deletion have both finished.
+        let _input = self
+            .keyboard
+            .as_ref()
+            .map(Keyboard::freeze_input)
+            .transpose()?;
+        ensure!(
+            target.snapshot(&self.connection)? == *before,
+            "Текст или курсор изменились; преобразование отменено"
+        );
         let edit = EditableTextProxyBlocking::builder(&self.connection)
             .destination(target.0.name.as_str())?
             .path(target.0.path.as_str())?
             .build()?;
         let length = replacement.chars().count();
         let inserted = splice(&before.text, start, start, replacement);
-        // Insert first: an application rejecting insertion must not lose the original text.
-        ensure!(
-            edit.insert_text(start as i32, replacement, replacement.len() as i32)?,
-            "Приложение отклонило вставку"
-        );
-        let actual = target.snapshot(&self.connection)?;
-        ensure!(
-            actual.text == inserted,
-            "Приложение изменило текст при вставке; исходный фрагмент сохранён"
-        );
-        if let Some(keyboard) = &self.keyboard {
-            keyboard.switch(final_layout)?;
-        }
-        ensure!(
-            edit.delete_text((start + length) as i32, (end + length) as i32)?,
-            "Приложение отклонило удаление; исходный фрагмент сохранён"
-        );
-        let expected = Surrounding {
-            text: splice(&before.text, start, end, replacement),
-            cursor: start + length,
-            anchor: start + length,
-        };
-        let current = target.snapshot(&self.connection)?;
-        ensure!(
-            current.text == expected.text,
-            "Текст изменился после замены; курсор не перемещён"
-        );
-        let text = target.text(&self.connection)?;
-        let reply = if current.cursor == expected.cursor && current.anchor == expected.anchor {
-            text.inner().call_method("GetNSelections", &())?
-        } else {
-            let reply = text
-                .inner()
-                .call_method("SetCaretOffset", &(expected.cursor as i32,))?;
+        let old_keyboard = self
+            .keyboard
+            .as_ref()
+            .map(|keyboard| -> Result<_> { Ok((keyboard.input_focus()?, keyboard.layout()?)) })
+            .transpose()?;
+        let result = (|| -> Result<(Surrounding, u32)> {
+            // Insert first: an application rejecting insertion must not lose the original text.
             ensure!(
-                reply.body().deserialize::<bool>()?,
-                "Не удалось восстановить курсор"
+                edit.insert_text(start as i32, replacement, replacement.len() as i32)?,
+                "Приложение отклонило вставку"
             );
-            reply
-        };
-        Ok((expected, reply.primary_header().serial_num().get()))
+            let actual = target.snapshot(&self.connection)?;
+            ensure!(
+                actual.text == inserted,
+                "Приложение изменило текст при вставке; исходный фрагмент сохранён"
+            );
+            if let Some(keyboard) = &self.keyboard {
+                keyboard.switch(final_layout)?;
+            }
+            ensure!(
+                edit.delete_text((start + length) as i32, (end + length) as i32)?,
+                "Приложение отклонило удаление; исходный фрагмент сохранён"
+            );
+            let expected = Surrounding {
+                text: splice(&before.text, start, end, replacement),
+                cursor: start + length,
+                anchor: start + length,
+            };
+            let current = target.snapshot(&self.connection)?;
+            ensure!(
+                current.text == expected.text,
+                "Текст изменился после замены; курсор не перемещён"
+            );
+            let text = target.text(&self.connection)?;
+            let reply = if current.cursor == expected.cursor && current.anchor == expected.anchor {
+                text.inner().call_method("GetNSelections", &())?
+            } else {
+                let reply = text
+                    .inner()
+                    .call_method("SetCaretOffset", &(expected.cursor as i32,))?;
+                ensure!(
+                    reply.body().deserialize::<bool>()?,
+                    "Не удалось восстановить курсор"
+                );
+                reply
+            };
+            Ok((expected, reply.primary_header().serial_num().get()))
+        })();
+        // Remove only our insertion, and only if the complete text still matches it.
+        if result.is_err()
+            && let Ok(text) = target.text(&self.connection)
+            && text.character_count().ok() == Some(inserted.chars().count() as i32)
+            && text.get_text(0, -1).ok().as_deref() == Some(inserted.as_str())
+        {
+            ensure!(
+                edit.delete_text(start as i32, (start + length) as i32)?,
+                "Не удалось отменить незавершённую вставку; исходный фрагмент сохранён"
+            );
+            ensure!(
+                text.get_text(0, -1)? == before.text,
+                "Приложение не подтвердило отмену вставки"
+            );
+            if let (Some(keyboard), Some((focus, Some(layout)))) = (&self.keyboard, old_keyboard)
+                && keyboard.input_focus()? == focus
+            {
+                keyboard.switch(layout)?;
+            }
+        }
+        result
     }
+
     fn replace_keyboard(
         &self,
         target: &Target,
@@ -1002,7 +1041,7 @@ impl Native {
             self.last_edit = Some((target.clone(), expected));
             return self.finish_replacement(undo.layout, shared);
         }
-        let (start, end) = if before.cursor != before.anchor {
+        let (start, mut end) = if before.cursor != before.anchor {
             (
                 before.cursor.min(before.anchor),
                 before.cursor.max(before.anchor),
@@ -1012,8 +1051,8 @@ impl Native {
         } else {
             bail!("Выделите текст в приложении");
         };
-        let original: String = before.text.chars().skip(start).take(end - start).collect();
-        let replacement = match action {
+        let mut original: String = before.text.chars().skip(start).take(end - start).collect();
+        let mut replacement = match action {
             Action::ChangeCase => {
                 if original
                     .chars()
@@ -1030,6 +1069,26 @@ impl Native {
         };
         if replacement == original {
             return Ok(());
+        }
+        if before.cursor == before.anchor && end < before.cursor {
+            // Keep trailing delimiters and the caret, as in the IBus last-word path.
+            let tail: String = before
+                .text
+                .chars()
+                .skip(end)
+                .take(before.cursor - end)
+                .collect();
+            // Keyboard fallback must not synthesize Enter/Tab while replacing a previous word.
+            if !tail.chars().any(char::is_control)
+                || target
+                    .accessible(&self.connection)?
+                    .get_interfaces()?
+                    .contains(Interface::EditableText)
+            {
+                original.push_str(&tail);
+                replacement.push_str(&tail);
+                end = before.cursor;
+            }
         }
         let layout = shared.lock().unwrap().engine.layout;
         let final_layout = if matches!(action, Action::ConvertSelection | Action::ConvertWord) {

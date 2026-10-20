@@ -222,6 +222,42 @@ with sandbox as temp:
         key('ctrl+BackSpace')
         pump(lambda: any(word in call('Status')[3].lower() for word in ('откат', 'отмен')))
         assert text() == 'привет'
+        # Focus can change inside the application between AT-SPI insertion and deletion.
+        buffer.set_text('ghbdtn')
+        buffer.place_cursor(buffer.get_end_iter())
+        interrupted = []
+        def interrupt_insert(buffer, position, inserted, length):
+            if inserted == 'привет':
+                interrupted.append(True)
+                password.grab_focus()
+        handler = buffer.connect_after('insert-text', interrupt_insert)
+        try:
+            call('ActivateAction', '(s)', ('convert_word',))
+            pump(lambda: interrupted and text() == 'ghbdtn')
+            assert password.get_text() == '', 'Interrupted edit changed the other field'
+            print('Interrupted AT-SPI insertion is rolled back without duplicating the word OK', flush=True)
+        finally:
+            buffer.disconnect(handler)
+            view.grab_focus()
+        if not driver:
+            for symbol, suffix in [(32, ' '), (0xff0d, '\n')]:
+                buffer.set_text('ghbdtn')
+                buffer.place_cursor(buffer.get_end_iter())
+                queued = []
+                def type_during_insert(buffer, position, inserted, length):
+                    if inserted == 'привет' and not queued:
+                        queued.append(True)
+                        code = xlib.XKeysymToKeycode(display, symbol)
+                        for pressed in (True, False):
+                            xtest.XTestFakeKeyEvent(display, code, pressed, 0)
+                        xlib.XFlush(display)
+                handler = buffer.connect_after('insert-text', type_during_insert)
+                try:
+                    call('ActivateAction', '(s)', ('convert_word',))
+                    pump(lambda: queued and text() == 'привет' + suffix)
+                    print('Physical space/Enter during AT-SPI replacement is queued and delivered once OK', flush=True)
+                finally:
+                    buffer.disconnect(handler)
         # The password field is skipped even when its contents resemble a wrong-layout word.
         password.grab_focus()
         password.set_text('')

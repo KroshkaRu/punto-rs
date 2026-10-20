@@ -35,6 +35,15 @@ pub struct Keyboard {
     enter: Option<xproto::KeyPressEvent>,
 }
 
+pub struct FrozenInput<'a>(&'a Keyboard);
+impl Drop for FrozenInput<'_> {
+    fn drop(&mut self) {
+        if let Ok(request) = self.0.connection.ungrab_keyboard(x11rb::CURRENT_TIME) {
+            let _ = request.check();
+        }
+    }
+}
+
 impl Keyboard {
     pub fn new() -> Result<Self> {
         let (connection, screen) = x11rb::connect(None)?;
@@ -376,6 +385,23 @@ impl Keyboard {
     }
     pub fn input_focus(&self) -> Result<u32> {
         Ok(self.connection.get_input_focus()?.reply()?.focus)
+    }
+    pub fn freeze_input(&self) -> Result<FrozenInput<'_>> {
+        let grab = self
+            .connection
+            .grab_keyboard(
+                true,
+                self.input_focus()?,
+                x11rb::CURRENT_TIME,
+                xproto::GrabMode::ASYNC,
+                xproto::GrabMode::SYNC,
+            )?
+            .reply()?;
+        anyhow::ensure!(
+            grab.status == xproto::GrabStatus::SUCCESS,
+            "Клавиатура занята; замена отменена"
+        );
+        Ok(FrozenInput(self))
     }
     pub fn keys_released(&self) -> Result<bool> {
         Ok(self

@@ -11,13 +11,17 @@ import gi
 gi.require_version('Atspi', '2.0')
 from gi.repository import Atspi, Gio, GLib
 
-def pump(until, timeout=8):
+def pump(until, timeout=8, stable=0):
+    stable_since = None
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         while GLib.MainContext.default().pending():
             GLib.MainContext.default().iteration(False)
         if until():
-            return
+            if stable_since is None: stable_since = time.monotonic()
+            if time.monotonic() - stable_since >= stable: return
+        else:
+            stable_since = None
         time.sleep(0.02)
     assert until(), 'GTK4 integration timed out'
 
@@ -70,13 +74,13 @@ with tempfile.TemporaryDirectory(prefix='punto-gtk4-') as directory:
             try: return call('InputReady')[0]
             except GLib.Error: return False
         pump(ready)
-        def physical(value):
+        def physical(value, delay=0.04):
             for char in value:
                 code = xlib.XKeysymToKeycode(display, ord(char))
                 for pressed in (True, False):
                     xtest.XTestFakeKeyEvent(display, code, pressed, 0)
                 xlib.XFlush(display)
-                time.sleep(0.04)
+                time.sleep(delay)
         physical('ghbdtn ')
         pump(lambda: text() == 'привет ')
         physical('lf ')
@@ -85,6 +89,33 @@ with tempfile.TemporaryDirectory(prefix='punto-gtk4-') as directory:
         pump(lambda: text() == 'привет да we ')
         physical('we ')
         pump(lambda: text() == 'привет да we we ')
+        for source, expected in [('ghbdtn', 'привет'), ('руддщ', 'hello'), ('k.,k.', 'люблю'), ('ghbdtn ', 'привет '), ('hello ghbdtn', 'hello привет'), ('😀 ghbdtn  ', '😀 привет  '), ('ghbdtn\n', 'привет\n')]:
+            Atspi.EditableText.set_text_contents(field.get_editable_text_iface(), source)
+            subprocess.run(['xdotool', 'key', 'ctrl+End'], check=True)
+            pump(lambda: text() == source)
+            subprocess.run(['xdotool', 'key', 'Pause'], check=True)
+            pump(lambda: text() == expected)
+            subprocess.run(['xdotool', 'key', 'ctrl+BackSpace'], check=True)
+            pump(lambda: text() == source)
+        print('GNOME Text Editor: Pause changes only the last word and undo restores it OK', flush=True)
+        Atspi.EditableText.set_text_contents(field.get_editable_text_iface(), '')
+        call('SetLayout', GLib.Variant('(s)', ('EN',)))
+        physical('ghbdtn')
+        subprocess.run(['xdotool', 'keydown', 'space'], check=True)
+        try:
+            pump(lambda: text() == 'привет ')
+        finally:
+            subprocess.run(['xdotool', 'keyup', 'space'], check=True)
+        for iteration in range(32):
+            Atspi.EditableText.set_text_contents(field.get_editable_text_iface(), '')
+            call('SetLayout', GLib.Variant('(s)', ('EN',)))
+            physical('ghbdtn ', delay=0.001)
+            time.sleep((iteration % 10) * 0.005)
+            subprocess.run(['xdotool', 'key', 'Pause'], check=True)
+            time.sleep(0.15)  # Let the queued shortcut finish before inspecting/resetting the document.
+            pump(lambda: text() in ('привет ', 'ghbdtn '), stable=0.2)
+        print('Held space and overlapping automatic correction/Pause never duplicate the word OK', flush=True)
+        Atspi.EditableText.set_text_contents(field.get_editable_text_iface(), 'привет да we we ')
         subprocess.run(['xdotool', 'key', 'ctrl+a'], check=True)
         call('ActivateAction', GLib.Variant('(s)', ('transliterate',)))
         pump(lambda: text() == 'privet da ве ве ')
