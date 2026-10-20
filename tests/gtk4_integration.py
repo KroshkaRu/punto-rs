@@ -85,6 +85,16 @@ with tempfile.TemporaryDirectory(prefix='punto-gtk4-') as directory:
         pump(lambda: text() == 'привет да we ')
         physical('we ')
         pump(lambda: text() == 'привет да we we ')
+        subprocess.run(['xdotool', 'key', 'ctrl+a'], check=True)
+        call('ActivateAction', GLib.Variant('(s)', ('transliterate',)))
+        pump(lambda: text() == 'privet da ве ве ')
+        call('ActivateAction', GLib.Variant('(s)', ('undo',)))
+        pump(lambda: text() == 'привет да we we ')
+        Atspi.EditableText.set_text_contents(field.get_editable_text_iface(), 'Privet, shchuka!')
+        subprocess.run(['xdotool', 'key', 'ctrl+a', 'alt+Next'], check=True)
+        pump(lambda: text() == 'Привет, щука!')
+        subprocess.run(['xdotool', 'key', 'ctrl+BackSpace'], check=True)
+        pump(lambda: text() == 'Privet, shchuka!')
         assert subprocess.check_output(['setxkbmap', '-query']) == mapping
         print('GNOME Text Editor: both corrections and following physical input in the new language OK', flush=True)
     except BaseException:

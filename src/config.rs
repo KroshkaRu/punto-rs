@@ -149,9 +149,9 @@ impl Default for Config {
                 (Action::SwitchLayout, "Ctrl+Alt+Space"),
                 (Action::ConvertSelection, "Ctrl+Alt+S"),
                 (Action::ConvertWord, "Pause"),
-                (Action::Undo, "ScrollLock"),
+                (Action::Undo, "Ctrl+Backspace"),
                 (Action::ChangeCase, "Ctrl+Alt+U"),
-                (Action::Transliterate, "Ctrl+Alt+T"),
+                (Action::Transliterate, "Alt+PageDown"),
                 (Action::PauseApp, "Ctrl+Alt+P"),
             ]
             .into_iter()
@@ -248,6 +248,28 @@ pub(crate) fn config_home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn requested_default_hotkeys_do_not_take_the_terminal_shortcut() {
+        let config = Config::default();
+        config.validate().unwrap();
+        assert_eq!(
+            config
+                .hotkeys
+                .iter()
+                .map(|binding| binding.keys.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Ctrl+Alt+A",
+                "Ctrl+Alt+Space",
+                "Ctrl+Alt+S",
+                "Pause",
+                "Ctrl+Backspace",
+                "Ctrl+Alt+U",
+                "Alt+PageDown",
+                "Ctrl+Alt+P"
+            ]
+        );
+    }
     #[test]
     fn disabled_hotkeys_can_repeat_and_never_match() {
         let mut config = Config::default();

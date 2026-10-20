@@ -41,9 +41,9 @@ with contextlib.ExitStack() as cleanup, tempfile.TemporaryDirectory(prefix='punt
     os.environ.update(ACCESSIBILITY_ENABLED='1', HOME=directory, XDG_CONFIG_HOME=directory, GTK_IM_MODULE='xim', XMODIFIERS='@im=none', NO_AT_BRIDGE='0')
     os.environ['XDG_SESSION_TYPE'] = os.environ.get('PUNTO_TEST_SESSION', 'x11')
     raw = os.environ.get('PUNTO_TEST_RAW') == '1'
+    os.environ['PUNTO_TEST_OUTPUT'] = directory + '/output.json'
     if raw:
         os.environ['ACCESSIBILITY_ENABLED'] = '0'
-        os.environ['PUNTO_TEST_OUTPUT'] = directory + '/output.json'
         recorded_sound = cleanup.enter_context(audio_server())
     config = pathlib.Path(directory) / 'punto-rs'
     config.mkdir()
@@ -78,12 +78,13 @@ with contextlib.ExitStack() as cleanup, tempfile.TemporaryDirectory(prefix='punt
             global field
             field = editable(Atspi.get_desktop(0))
             return field is not None
+        output = pathlib.Path(os.environ['PUNTO_TEST_OUTPUT'])
+        def contents():
+            try: return json.loads(output.read_text())
+            except (OSError, json.JSONDecodeError): return {}
         if raw:
             output = pathlib.Path(os.environ['PUNTO_TEST_OUTPUT'])
             pump(output.exists)
-            def contents():
-                try: return json.loads(output.read_text())
-                except (OSError, json.JSONDecodeError): return {}
             text = lambda: contents().get('text')
             assert not find(), 'Raw fixture unexpectedly exposed an accessible focused field'
         else:
@@ -106,6 +107,70 @@ with contextlib.ExitStack() as cleanup, tempfile.TemporaryDirectory(prefix='punt
                         time.sleep(hold_space)  # A real user keeps Space held while AT-SPI publishes insertion.
                 xlib.XFlush(display)
                 time.sleep(delay)
+        if os.environ.get('PUNTO_TEST_ENTER') == '1':
+            text = lambda: contents().get('text')
+            subprocess.run(['xdotool', 'key', 'ctrl+a', 'BackSpace'], check=True)
+            pump(lambda: text() == '')
+            call('SetLayout', GLib.Variant('(s)', ('EN',)))
+            submitted = os.environ.get('PUNTO_TEST_SUBMIT') == '1'
+            for source, expected, key in [('ghbdtn', 'привет', 'Return'), ('lf', 'да', 'KP_Enter'), ('hello', 'hello', 'Return'), ('we', 'we', 'KP_Enter')]:
+                physical(source)
+                held = source == 'ghbdtn'
+                subprocess.run(['xdotool', 'keydown' if held else 'key', key], check=True)
+                if submitted:
+                    pump(lambda: contents().get('submitted', [])[-1:] == [expected] and text() == '')
+                else:
+                    pump(lambda: text().endswith(expected + '\n'))
+                if held: subprocess.run(['xdotool', 'keyup', key], check=True)
+            if submitted:
+                assert contents()['submitted'] == ['привет', 'да', 'hello', 'we'], contents()
+                subprocess.run(['xdotool', 'key', 'Return'], check=True)
+                pump(lambda: len(contents()['submitted']) == 5)
+                assert contents()['submitted'][-1] == '', contents()
+            if submitted:
+                for source in ('zzqzzq', 'ghbdtn', 'zzqzzq', 'ghbdtn'):
+                    subprocess.run(['xdotool', 'key', 'ctrl+a', 'BackSpace'], check=True)
+                    pump(lambda: text() == '')
+                    call('SetLayout', GLib.Variant('(s)', ('EN',)))
+                    count = len(contents()['submitted'])
+                    physical(source, delay=0)
+                    code = xlib.XKeysymToKeycode(display, 0xff0d)
+                    xtest.XTestFakeKeyEvent(display, code, True, 0)
+                    xtest.XTestFakeKeyEvent(display, code, False, 0)
+                    xlib.XFlush(display)
+                    physical('we', delay=0)
+                    pump(lambda: len(contents()['submitted']) == count + 1 and len(text()) == 2)
+                    assert contents()['submitted'][-1] in (source, 'привет'), contents()
+                    assert text() in ('we', 'цу'), contents()
+            subprocess.run(['xdotool', 'key', 'Tab'], check=True)
+            call('SetLayout', GLib.Variant('(s)', ('EN',)))
+            physical('ghbdtn')
+            subprocess.run(['xdotool', 'key', 'Return'], check=True)
+            pump(lambda: contents().get('password') == ('привет' if raw else 'ghbdtn'))
+            if raw: recorded_sound()
+            subprocess.run(['xdotool', 'key', 'shift+Tab', 'ctrl+a', 'BackSpace'], check=True)
+            pump(lambda: text() == '')
+            (config / 'config.toml').write_text('backend = "native"\nautomatic = false\n')
+            call('Reload')
+            call('SetLayout', GLib.Variant('(s)', ('EN',)))
+            physical('ghbdtn')
+            subprocess.run(['xdotool', 'key', 'Return'], check=True)
+            pump(lambda: contents().get('submitted', [])[-1:] == ['ghbdtn'] if submitted else text().endswith('ghbdtn\n'))
+            subprocess.run(['xdotool', 'key', 'ctrl+a', 'BackSpace'], check=True)
+            call('SetLayout', GLib.Variant('(s)', ('EN',)))
+            physical('privet')
+            subprocess.run(['xdotool', 'key', 'ctrl+a', 'alt+Next'], check=True)
+            pump(lambda: text() == 'привет')
+            subprocess.run(['xdotool', 'key', 'ctrl+BackSpace'], check=True)
+            pump(lambda: text() == 'privet')
+            subprocess.run(['xdotool', 'key', 'ctrl+a', 'alt+Next'], check=True)
+            pump(lambda: text() == 'привет')
+            subprocess.run(['xdotool', 'key', 'ctrl+a', 'alt+Next'], check=True)
+            pump(lambda: text() == 'privet')
+            print('Real default Alt+PageDown: bidirectional transliteration and Ctrl+Backspace undo OK', flush=True)
+            assert subprocess.check_output(['setxkbmap', '-query']) == mapping
+            print('Enter: correction before submission/newline, following layout, no duplicate Enter, password policy OK', flush=True)
+            sys.exit(0)
         if os.environ['XDG_SESSION_TYPE'] == 'wayland':
             physical('ghbdtn ')
             pump(lambda: text() == '😀 ghbdtn ')
@@ -228,9 +293,9 @@ with contextlib.ExitStack() as cleanup, tempfile.TemporaryDirectory(prefix='punt
                 pump(lambda: text() == 'ghbdtn ')
                 assert not call('Status')[1], 'Disabled generic backend still advertised automatic input'
                 print('Generic X11: PRIMARY selection, manual word, safe undo cancellation and fast typing preserve text OK', flush=True)
-    except BaseException:
+    except Exception:
         print('Actual text:', repr(text()) if field or raw else None, 'Daemon exit:', daemon.poll(), flush=True)
-        if daemon.poll() is None: print('Status:', call('Status'), 'Output:', contents() if raw else None, flush=True)
+        if daemon.poll() is None: print('Status:', call('Status'), 'Output:', contents(), flush=True)
         raise
     finally:
         for process in (editor, daemon, host):

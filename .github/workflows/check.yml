@@ -45,6 +45,12 @@ jobs:
           curl -fsSLO https://github.com/electron/electron/releases/download/v40.2.1/SHASUMS256.txt
           sha256sum --check --ignore-missing SHASUMS256.txt
           unzip -q electron-v40.2.1-linux-x64.zip
+      - run: |
+          for raw in 0 1; do
+            for submit in 0 1; do
+              PUNTO_TEST_ENTER=1 PUNTO_TEST_RAW=$raw PUNTO_TEST_SUBMIT=$submit PUNTO_TEST_ELECTRON=/tmp/electron-runtime/electron xvfb-run -a dbus-run-session -- python3 tests/electron_integration.py target/debug/punto-rs
+            done
+          done
       - run: PUNTO_TEST_RAW=1 PUNTO_TEST_ELECTRON=/tmp/electron-runtime/electron xvfb-run -a dbus-run-session -- python3 tests/electron_integration.py target/debug/punto-rs
       - run: PUNTO_TEST_RAW=1 PUNTO_TEST_RICH=1 PUNTO_TEST_ELECTRON=/tmp/electron-runtime/electron xvfb-run -a dbus-run-session -- python3 tests/electron_integration.py target/debug/punto-rs
       - if: matrix.ubuntu == '24.04'

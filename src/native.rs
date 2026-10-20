@@ -198,7 +198,10 @@ impl Native {
         let keyboard = if std::env::var("XDG_SESSION_TYPE").as_deref() != Ok("wayland")
             && std::env::var_os("DISPLAY").is_some()
         {
-            Some(Keyboard::new()?)
+            let mut keyboard = Keyboard::new()?;
+            // A conflicting global Enter must not disable the other input paths.
+            let _ = keyboard.grab_enter();
+            Some(keyboard)
         } else {
             None
         };
@@ -340,6 +343,21 @@ impl Native {
                 shared.lock().unwrap().engine.layout = layout;
             }
         }
+        if let Some(event) = self.keyboard.as_mut().and_then(Keyboard::take_enter) {
+            let correction = self.before_enter(&event, shared);
+            // Replay must run even if dictionaries, accessibility or editing failed.
+            let forwarded = self.keyboard.as_mut().unwrap().finish_enter(event);
+            for result in [correction, forwarded] {
+                if let Err(error) = result {
+                    shared.lock().unwrap().message = format!("Enter: {error:#}");
+                }
+            }
+            if let Some(input) = &mut self.input {
+                input.clear();
+            }
+            self.undo = None;
+            self.last_edit = None;
+        }
         for _ in 0..16 {
             if Instant::now() < self.shortcuts_ready {
                 break;
@@ -349,6 +367,97 @@ impl Native {
             if let Err(error) = self.action(action, shared) {
                 shared.lock().unwrap().message = error.to_string();
             }
+        }
+        Ok(())
+    }
+    fn before_enter(
+        &mut self,
+        event: &x11rb::protocol::xproto::KeyPressEvent,
+        shared: &Shared,
+    ) -> Result<()> {
+        let unknown = self.input.as_ref().is_some_and(|input| input.active);
+        let recorded = self
+            .input
+            .as_mut()
+            .and_then(|input| input.take_enter_word())
+            .unwrap_or_default();
+        let original = if unknown {
+            recorded
+        } else {
+            let Some(target) = self.target.clone() else {
+                return Ok(());
+            };
+            self.focus(target.clone(), shared)?;
+            let Some(keyboard) = &self.keyboard else {
+                return Ok(());
+            };
+            let (_, pid, _, _) = keyboard.window_context()?;
+            if pid.is_none()
+                || pid != self.target_pid
+                || !target.safe(&self.connection)?
+                || recorded.is_empty()
+            {
+                return Ok(());
+            }
+            // The renderer may still be applying keys delivered before Enter was frozen.
+            let deadline = Instant::now() + Duration::from_millis(60);
+            loop {
+                let snapshot = target.snapshot(&self.connection)?;
+                if snapshot.cursor != snapshot.anchor {
+                    return Ok(());
+                }
+                let current = word_range(&snapshot.text, snapshot.cursor)
+                    .filter(|(_, end)| *end == snapshot.cursor)
+                    .map(|(start, end)| {
+                        snapshot
+                            .text
+                            .chars()
+                            .skip(start)
+                            .take(end - start)
+                            .collect::<String>()
+                    });
+                if current.as_deref() == Some(&recorded) {
+                    break recorded;
+                }
+                if Instant::now() >= deadline {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        if original.is_empty() || original.chars().any(char::is_whitespace) {
+            return Ok(());
+        }
+        let keyboard = self.keyboard.as_ref().context("X11 недоступен")?;
+        let old_layout = keyboard.layout()?.context("Неизвестная раскладка")?;
+        let correction = {
+            let state = shared.lock().unwrap();
+            if !state.engine.automatic(&state.config) {
+                return Ok(());
+            }
+            state.dictionaries.replacement(
+                &original,
+                word_layout(&original, old_layout),
+                &state.config,
+            )
+        };
+        let Some(correction) = correction.filter(|correction| correction.text != original) else {
+            return Ok(());
+        };
+        keyboard.typing_plan(&original, old_layout)?;
+        keyboard.replace_before_enter(
+            keyboard.input_focus()?,
+            original.chars().count(),
+            &correction.text,
+            correction.layout,
+            event,
+        )?;
+        let mut state = shared.lock().unwrap();
+        state.engine.layout = correction.layout;
+        let sound = unknown || state.config.sound;
+        drop(state);
+        if sound {
+            crate::service::play_sound(shared.clone());
         }
         Ok(())
     }

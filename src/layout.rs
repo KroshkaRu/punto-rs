@@ -140,22 +140,81 @@ pub fn transliterate(text: &str) -> String {
         "a", "b", "v", "g", "d", "e", "yo", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r",
         "s", "t", "u", "f", "kh", "ts", "ch", "sh", "shch", "", "y", "", "e", "yu", "ya",
     ];
+    const DIGRAPHS: [(&str, &str); 11] = [
+        ("shch", "щ"),
+        ("sch", "щ"),
+        ("yo", "ё"),
+        ("zh", "ж"),
+        ("kh", "х"),
+        ("ts", "ц"),
+        ("ch", "ч"),
+        ("sh", "ш"),
+        ("yu", "ю"),
+        ("ya", "я"),
+        ("ye", "е"),
+    ];
+    const RUSSIAN: [&str; 26] = [
+        "а", "б", "ц", "д", "е", "ф", "г", "х", "и", "й", "к", "л", "м", "н", "о", "п", "к", "р",
+        "с", "т", "у", "в", "в", "кс", "ы", "з",
+    ];
     let mut result = String::new();
-    for ch in text.chars() {
-        let lower = ch.to_lowercase().next().unwrap_or(ch);
-        if let Some(index) = LETTERS.chars().position(|v| v == lower) {
-            let value = LATIN[index];
-            if ch.is_uppercase() {
-                let mut chars = value.chars();
-                if let Some(first) = chars.next() {
-                    result.extend(first.to_uppercase());
-                    result.extend(chars);
+    for token in text.split_inclusive(|ch: char| !ch.is_alphabetic()) {
+        let upper = token.chars().any(char::is_alphabetic)
+            && token
+                .chars()
+                .filter(|ch| ch.is_alphabetic())
+                .all(char::is_uppercase);
+        let mut word = String::new();
+        if token.chars().any(is_russian) {
+            for ch in token.chars() {
+                let lower = ch.to_lowercase().next().unwrap_or(ch);
+                if let Some(index) = LETTERS.chars().position(|value| value == lower) {
+                    let value = LATIN[index];
+                    if ch.is_uppercase() {
+                        let mut chars = value.chars();
+                        if let Some(first) = chars.next() {
+                            word.extend(first.to_uppercase());
+                            word.extend(chars);
+                        }
+                    } else {
+                        word.push_str(value);
+                    }
+                } else {
+                    word.push(ch);
                 }
-            } else {
-                result.push_str(value);
             }
         } else {
-            result.push(ch);
+            let mut remaining = token;
+            while let Some(first) = remaining.chars().next() {
+                let matched = DIGRAPHS.iter().find(|(latin, _)| {
+                    remaining
+                        .get(..latin.len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(latin))
+                });
+                let (length, value) = if let Some((latin, russian)) = matched {
+                    (latin.len(), *russian)
+                } else if first.is_ascii_alphabetic() {
+                    (
+                        1,
+                        RUSSIAN[usize::from(first.to_ascii_lowercase() as u8 - b'a')],
+                    )
+                } else {
+                    word.push(first);
+                    remaining = &remaining[first.len_utf8()..];
+                    continue;
+                };
+                if first.is_uppercase() {
+                    word.extend(value.chars().flat_map(char::to_uppercase));
+                } else {
+                    word.push_str(value);
+                }
+                remaining = &remaining[length..];
+            }
+        }
+        if upper {
+            result.push_str(&word.to_uppercase());
+        } else {
+            result.push_str(&word);
         }
     }
     result
@@ -164,6 +223,19 @@ pub fn transliterate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transliteration_follows_each_words_script() {
+        for (source, expected) in [
+            ("привет", "privet"),
+            ("privet", "привет"),
+            ("Привет, shchuka!", "Privet, щука!"),
+            ("ЩУКА SHCHUKA", "SHCHUKA ЩУКА"),
+            ("ёж yu ya zh kh ts ch sh", "yozh ю я ж х ц ч ш"),
+            ("é 😀\n123", "é 😀\n123"),
+        ] {
+            assert_eq!(transliterate(source), expected, "{source}");
+        }
+    }
     #[test]
     fn key_tables_match() {
         assert_eq!(EN.chars().count(), RU.chars().count());

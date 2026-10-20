@@ -200,7 +200,7 @@ impl Engine {
         if key == 0xff1b && !self.buffer.is_empty() {
             return (true, self.flush());
         }
-        if key == 0xff0d || key == 0xff09 {
+        if matches!(key, 0xff0d | 0xff8d | 0xff09) {
             // Commit text, then let the application handle Enter/Tab (submit/focus).
             return (false, self.finish("", config, dictionaries));
         }
@@ -473,6 +473,17 @@ mod tests {
         text.chars()
             .flat_map(|ch| e.process(ch as u32, 0, c, d).1)
             .collect()
+    }
+    #[test]
+    fn enter_commits_correction_before_forwarding_the_key() {
+        for key in [0xff0d, 0xff8d] {
+            let (mut engine, mut config, dictionaries) = setup();
+            type_text(&mut engine, &mut config, &dictionaries, "ghbdtn");
+            let (handled, effects) = engine.process(key, 0, &mut config, &dictionaries);
+            assert!(!handled);
+            assert!(effects.contains(&Effect::Commit("привет".into())));
+            assert_eq!(engine.layout, Layout::Ru);
+        }
     }
     #[test]
     fn domains_are_not_corrected_at_the_first_dot() {

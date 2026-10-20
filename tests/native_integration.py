@@ -136,7 +136,7 @@ with sandbox as temp:
                     time.sleep(0.002)
         def key(chord):
             if services:
-                assert chord == 'Scroll_Lock'
+                assert chord == 'ctrl+BackSpace'
                 service('EmitAction', GLib.Variant('(s)', ('undo',)))
             else:
                 subprocess.run(['xdotool', 'key', '--clearmodifiers', chord], check=True)
@@ -180,7 +180,7 @@ with sandbox as temp:
             buffer.set_text('')
             physical(original)
             pump(lambda: text() == expected and call('Status')[0] == 'RU')
-            key('Scroll_Lock')
+            key('ctrl+BackSpace')
             pump(lambda: text() == original and call('Status')[0] == 'EN')
         buffer.set_text('')
         physical('ghbdtn ')
@@ -190,7 +190,7 @@ with sandbox as temp:
             print('Actual:', repr(text()), 'Status:', call('Status'), flush=True)
             raise
         assert call('Status')[0] == 'RU'
-        key('Scroll_Lock')
+        key('ctrl+BackSpace')
         pump(lambda: text() == 'ghbdtn ' and call('Status')[0] == 'EN')
         assert call('Status')[0] == 'EN'
         buffer.set_text('')
@@ -200,21 +200,26 @@ with sandbox as temp:
         pump(lambda: call('Status')[0] == 'RU')
         physical('hello ')
         pump(lambda: text() == 'hello ')
-        key('Scroll_Lock')
+        key('ctrl+BackSpace')
         pump(lambda: text() == 'руддщ ')
+        buffer.set_text('')
+        call('SetLayout', '(s)', ('EN',))
+        physical('ghbdtn')
+        subprocess.run(['xdotool', 'key', 'Return'], check=True)
+        pump(lambda: text() == 'привет\n' and call('Status')[0] == 'RU')
         # Convert selection and verify undo without using CLIPBOARD.
         buffer.set_text('ghbdtn')
         buffer.select_range(buffer.get_start_iter(), buffer.get_end_iter())
         convert_selection()
         pump(lambda: text() == 'привет')
-        key('Scroll_Lock')
+        key('ctrl+BackSpace')
         pump(lambda: text() == 'ghbdtn')
         # A moved cursor must not allow deletion by undo.
         buffer.select_range(buffer.get_start_iter(), buffer.get_end_iter())
         convert_selection()
         pump(lambda: text() == 'привет')
         buffer.place_cursor(buffer.get_start_iter())
-        key('Scroll_Lock')
+        key('ctrl+BackSpace')
         pump(lambda: any(word in call('Status')[3].lower() for word in ('откат', 'отмен')))
         assert text() == 'привет'
         # The password field is skipped even when its contents resemble a wrong-layout word.

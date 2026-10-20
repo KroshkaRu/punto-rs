@@ -10,6 +10,17 @@ app.whenReady().then(() => {
   window.webContents.once('did-finish-load', () => {
     window.webContents.executeJavaScript(`
       const field = document.getElementById('field');
+      window.submitted = [];
+      if (${process.env.PUNTO_TEST_SUBMIT === '1'}) {
+        field.addEventListener('keydown', event => {
+          if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+            event.preventDefault();
+            window.submitted.push(field.value ?? field.textContent);
+            if (field.tagName === 'TEXTAREA') field.value = ''; else field.textContent = '';
+            field.dispatchEvent(new Event('input', {bubbles:true}));
+          }
+        });
+      }
       if (field.tagName === 'TEXTAREA') {
         field.value = '😀 ';
         field.focus(); field.setSelectionRange(field.value.length, field.value.length);
@@ -31,7 +42,8 @@ if (process.env.PUNTO_TEST_OUTPUT) {
     try {
       const value = await window.webContents.executeJavaScript(`JSON.stringify({
         text: document.getElementById('field').value ?? document.getElementById('field').textContent,
-        password: document.getElementById('secret').value
+        password: document.getElementById('secret').value,
+        submitted: window.submitted ?? []
       })`);
       fs.writeFileSync(process.env.PUNTO_TEST_OUTPUT + '.tmp', value);
       fs.renameSync(process.env.PUNTO_TEST_OUTPUT + '.tmp', process.env.PUNTO_TEST_OUTPUT);

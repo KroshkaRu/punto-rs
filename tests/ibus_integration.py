@@ -54,19 +54,19 @@ def gtk_check():
     buffer.set_text("")
     subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "15", "ghbdtn "], check=True)
     pump(lambda: text() == "привет ")
-    key("Scroll_Lock")
+    key("ctrl+BackSpace")
     pump(lambda: text() == "ghbdtn ")
     buffer.set_text("ghbdtn")
     buffer.select_range(buffer.get_start_iter(), buffer.get_end_iter())
     key("ctrl+alt+s")
     pump(lambda: text() == "привет")
-    key("Scroll_Lock")
+    key("ctrl+BackSpace")
     pump(lambda: text() == "ghbdtn")
     buffer.set_text("")
     key("ctrl+alt+space")  # RU: physical hello keys produce руддщ before Space.
     subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "15", "hello "], check=True)
     pump(lambda: text() == "hello ")
-    key("Scroll_Lock")
+    key("ctrl+BackSpace")
     pump(lambda: text() == "руддщ ")
     window.destroy()
     print("GTK3 integration: ghbdtn → привет, руддщ → hello, selection replacement and undo OK")
@@ -127,7 +127,7 @@ def main():
             assert preedits and preedits[-1] == "", preedits
 
             context.set_surrounding_text(IBus.Text.new_from_string("привет "), 7, 7)
-            assert context.process_key_event(0xFF14, 0, 0)  # ScrollLock: undo.
+            assert context.process_key_event(0xFF08, 0, 4)  # Ctrl+Backspace: undo.
             pump(lambda: len(committed) == 2)
             assert deletes == [(-7, 7)], deletes
             assert committed[-1] == "ghbdtn ", committed
@@ -139,7 +139,7 @@ def main():
             assert len(deletes) == 1, "Selected text must not be deleted twice"
 
             context.set_surrounding_text(IBus.Text.new_from_string("привет"), 6, 6)
-            assert context.process_key_event(0xFF14, 0, 0)
+            assert context.process_key_event(0xFF08, 0, 4)
             pump(lambda: len(committed) == 4)
             assert committed[-1] == "ghbdtn", committed
 
@@ -169,6 +169,14 @@ def main():
             assert not context.process_key_event(ord("a"), 0, 0), "Locked screen must pass through"
             context.focus_out()
             focus("org.punto.TestEditor", "Editor")
+            context.focus_in()
+            for source, expected in [("привет", "privet"), ("Privet", "Привет")]:
+                context.set_surrounding_text(IBus.Text.new_from_string(source), len(source), 0)
+                count = len(committed)
+                assert context.process_key_event(0xFF56, 0, 8)  # Alt+PageDown.
+                pump(lambda: len(committed) == count + 1)
+                assert committed[-1] == expected, committed
+            context.focus_out()
             if os.environ.get("PUNTO_TEST_GTK"):
                 gtk_check()
             print("IBus integration: auto correction, preedit, selection, undo, password ordering, focus-out, exceptions, lock OK")

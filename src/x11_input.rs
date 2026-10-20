@@ -147,6 +147,8 @@ pub struct InputBackend {
     injected: VecDeque<(u8, bool)>,
     undo: Option<Undo>,
     pub active: bool,
+    enter_word: Option<String>,
+    enter_dirty: bool,
 }
 impl InputBackend {
     pub fn new() -> Result<Self> {
@@ -162,14 +164,18 @@ impl InputBackend {
             injected: VecDeque::new(),
             undo: None,
             active: false,
+            enter_word: None,
+            enter_dirty: false,
         })
     }
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.buffer.clear();
         self.last_word = None;
         self.pending = false;
         self.released = false;
         self.undo = None;
+        self.enter_word = None;
+        self.enter_dirty = false;
     }
     pub fn poll(
         &mut self,
@@ -183,7 +189,7 @@ impl InputBackend {
         };
         let (window, pid, app, title) = keyboard.window_context()?;
         let accessible = pid.is_some() && pid == accessible_pid;
-        if window != self.window || accessible || !enabled {
+        if window != self.window || (!enabled && !accessible) {
             self.clear();
             self.window = window;
         }
@@ -210,6 +216,8 @@ impl InputBackend {
                 state.message = "X11: неизвестное поле; автозамена со звуком".into();
             }
         }
+        let recording =
+            self.active || (accessible && shared.lock().unwrap().engine.capabilities & 1 != 0);
         // Drain even when disabled, so a newly enabled backend never replays older typing.
         let mut drained = false;
         for _ in 0..256 {
@@ -238,7 +246,7 @@ impl InputBackend {
             if self.ignoring {
                 continue;
             }
-            if !self.active {
+            if !recording {
                 continue;
             }
             match event {
@@ -263,6 +271,17 @@ impl InputBackend {
                             self.released = true;
                         }
                         continue;
+                    }
+                    if matches!(symbol, 0xff0d | 0xff8d) {
+                        self.enter_word = Some(std::mem::take(&mut self.buffer));
+                        self.enter_dirty = false;
+                        self.pending = false;
+                        self.undo = None;
+                        self.last_word = None;
+                        continue;
+                    }
+                    if self.enter_word.is_some() {
+                        self.enter_dirty = true;
                     }
                     if (0xffe1..=0xffee).contains(&symbol) {
                         continue;
@@ -333,6 +352,17 @@ impl InputBackend {
             self.correct(keyboard, shared)?;
         }
         Ok(())
+    }
+    pub fn take_enter_word(&mut self) -> Option<String> {
+        let word = self
+            .enter_word
+            .take()
+            .or_else(|| Some(std::mem::take(&mut self.buffer)));
+        if std::mem::take(&mut self.enter_dirty) {
+            None
+        } else {
+            word
+        }
     }
     fn correct(&mut self, keyboard: &Keyboard, shared: &Shared) -> Result<()> {
         let original = std::mem::take(&mut self.buffer);

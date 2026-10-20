@@ -31,6 +31,8 @@ pub struct Keyboard {
     bindings_valid: bool,
     symbols_map: Vec<xkb::KeySymMap>,
     symbols_first: u8,
+    enter_grabs: Vec<(u8, u16)>,
+    enter: Option<xproto::KeyPressEvent>,
 }
 
 impl Keyboard {
@@ -55,6 +57,8 @@ impl Keyboard {
             bindings_valid: false,
             symbols_map: vec![],
             symbols_first: 0,
+            enter_grabs: vec![],
+            enter: None,
         };
         keyboard.mapping()?;
         Ok(keyboard)
@@ -374,6 +378,9 @@ impl Keyboard {
         Ok(self.connection.get_input_focus()?.reply()?.focus)
     }
     pub fn idle(&self) -> Result<()> {
+        self.idle_except(None)
+    }
+    fn idle_except(&self, allowed: Option<u8>) -> Result<()> {
         let state = self
             .connection
             .xkb_get_state(xkb::ID::USE_CORE_KBD.into())?
@@ -384,7 +391,12 @@ impl Keyboard {
         );
         let keys = self.connection.query_keymap()?.reply()?;
         anyhow::ensure!(
-            keys.keys.iter().all(|byte| *byte == 0),
+            keys.keys.iter().enumerate().all(|(index, byte)| {
+                let ignored = allowed
+                    .filter(|key| usize::from(*key) / 8 == index)
+                    .map_or(0, |key| 1 << (key % 8));
+                byte & !ignored == 0
+            }),
             "Дождитесь отпускания клавиш"
         );
         Ok(())
@@ -488,6 +500,9 @@ impl Keyboard {
                 }
             }
         }
+        if !self.enter_grabs.is_empty() && self.grab_enter().is_err() {
+            failures.push("Enter".into());
+        }
         self.bindings = bindings;
         self.bindings_valid = true;
         self.connection.flush()?;
@@ -503,6 +518,124 @@ impl Keyboard {
         let start = usize::from(code.saturating_sub(self.first)) * self.width;
         self.keys.get(start..start + self.width).unwrap_or(&[])
     }
+    pub fn grab_enter(&mut self) -> Result<()> {
+        if self.enter_grabs.is_empty() {
+            let map = self.connection.get_modifier_mapping()?.reply()?;
+            let mut locks = 2u16;
+            for (index, keys) in map
+                .keycodes
+                .chunks(usize::from(map.keycodes_per_modifier()).max(1))
+                .enumerate()
+            {
+                if keys
+                    .iter()
+                    .any(|code| self.symbols(*code).contains(&0xff7f))
+                {
+                    locks |= 1 << index;
+                }
+            }
+            for code in self.first..=self.connection.setup().max_keycode {
+                if self
+                    .symbols(code)
+                    .iter()
+                    .any(|symbol| matches!(*symbol, 0xff0d | 0xff8d))
+                {
+                    for modifiers in (0..=255u16).filter(|mask| mask & !locks == 0) {
+                        self.enter_grabs.push((code, modifiers));
+                    }
+                }
+            }
+        }
+        for &(code, modifiers) in &self.enter_grabs {
+            if self
+                .grabs
+                .iter()
+                .any(|(key, mods, _)| *key == code && *mods == modifiers)
+            {
+                continue;
+            }
+            self.connection
+                .grab_key(
+                    false,
+                    self.root,
+                    modifiers.into(),
+                    code,
+                    xproto::GrabMode::ASYNC,
+                    xproto::GrabMode::SYNC,
+                )?
+                .check()?;
+        }
+        Ok(())
+    }
+    pub fn take_enter(&mut self) -> Option<xproto::KeyPressEvent> {
+        self.enter.take()
+    }
+    /// Always release a captured Enter, including when correction was rejected.
+    pub fn finish_enter(&mut self, event: xproto::KeyPressEvent) -> Result<()> {
+        self.connection
+            .allow_events(xproto::Allow::REPLAY_KEYBOARD, event.time)?
+            .check()?;
+        Ok(())
+    }
+    /// Keep real input frozen until edits have been queued ahead of the original Enter.
+    pub fn replace_before_enter(
+        &self,
+        focus: u32,
+        count: usize,
+        text: &str,
+        layout: Layout,
+        event: &xproto::KeyPressEvent,
+    ) -> Result<()> {
+        let plan = self.typing_plan(text, layout)?;
+        let backspace = (self.first..=self.connection.setup().max_keycode)
+            .find(|code| self.symbols(*code).contains(&0xff08))
+            .context("Нет Backspace")?;
+        self.idle_except(Some(event.detail))?;
+        anyhow::ensure!(self.input_focus()? == focus, "Фокус изменился");
+        let send = |code: u8, group: Layout, shifted: bool| -> Result<()> {
+            let group = self
+                .groups
+                .iter()
+                .position(|name| match group {
+                    Layout::En => matches!(name.as_str(), "us" | "gb"),
+                    Layout::Ru => name == "ru",
+                })
+                .context("Неизвестная раскладка")?;
+            for response_type in [xproto::KEY_PRESS_EVENT, xproto::KEY_RELEASE_EVENT] {
+                let key = xproto::KeyPressEvent {
+                    response_type,
+                    detail: code,
+                    event: focus,
+                    root: self.root,
+                    time: event.time,
+                    same_screen: true,
+                    state: ((group as u16) << 13 | u16::from(shifted)).into(),
+                    ..Default::default()
+                };
+                self.connection
+                    .send_event(
+                        true,
+                        focus,
+                        if response_type == xproto::KEY_PRESS_EVENT {
+                            xproto::EventMask::KEY_PRESS
+                        } else {
+                            xproto::EventMask::KEY_RELEASE
+                        },
+                        key,
+                    )?
+                    .check()?;
+            }
+            Ok(())
+        };
+        for _ in 0..count {
+            send(backspace, layout, false)?;
+        }
+        for (group, code, shifted) in plan {
+            send(code, group, shifted)?;
+        }
+        self.switch(layout)?;
+        Ok(())
+    }
     pub fn actions(&mut self) -> Result<Vec<Action>> {
         let mut actions = vec![];
         while let Some(event) = self.connection.poll_for_event()? {
@@ -515,6 +648,8 @@ impl Keyboard {
                         .find(|(code, mods, _)| *code == key.detail && *mods == modifiers)
                     {
                         actions.push(*action);
+                    } else if self.enter_grabs.contains(&(key.detail, modifiers)) {
+                        self.enter = Some(key);
                     }
                 }
                 Event::MappingNotify(_) => {
