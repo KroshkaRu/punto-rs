@@ -92,6 +92,7 @@ impl AppRule {
 pub struct Config {
     pub backend: Backend,
     pub automatic: bool,
+    pub x11_unverified: bool,
     pub initial_layout: Layout,
     pub remember_layout: bool,
     pub minimum_word: usize,
@@ -113,6 +114,7 @@ impl Default for Config {
         Self {
             backend: Backend::Auto,
             automatic: true,
+            x11_unverified: true,
             initial_layout: Layout::En,
             remember_layout: true,
             minimum_word: 3,
@@ -259,7 +261,12 @@ mod tests {
     fn config_roundtrip_and_validation() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
+        fs::write(&path, "automatic = true\n").unwrap();
         let mut config = Config::load(&path).unwrap();
+        assert!(
+            config.x11_unverified,
+            "Old configurations must receive the general X11 backend"
+        );
         config.save(&path).unwrap();
         assert!(Config::load(&path).unwrap().automatic);
         config.hotkeys[1].keys = config.hotkeys[0].keys.clone();

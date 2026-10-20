@@ -139,6 +139,8 @@ pub struct Native {
     portal: Option<crate::portal::Portal>,
     shortcuts_ready: Instant,
     session_layout: Option<crate::session_layout::SessionLayout>,
+    input: Option<crate::x11_input::InputBackend>,
+    target_pid: Option<u32>,
 }
 impl Native {
     pub fn new(shared: &Shared) -> Result<Self> {
@@ -200,6 +202,19 @@ impl Native {
         } else {
             None
         };
+        let (input, input_error) = if keyboard.is_some() {
+            match crate::x11_input::InputBackend::new() {
+                Ok(input) => (Some(input), None),
+                Err(error) => (
+                    None,
+                    Some(format!(
+                        "XInput2 недоступен: {error:#}; используется AT-SPI"
+                    )),
+                ),
+            }
+        } else {
+            (None, None)
+        };
         let session_layout = if keyboard.is_none() {
             crate::session_layout::SessionLayout::discover()?
         } else {
@@ -209,7 +224,7 @@ impl Native {
             let mut state = shared.lock().unwrap();
             state.connected = true;
             state.backend = if keyboard.is_some() {
-                "X11 + AT-SPI"
+                "X11 XInput2 + AT-SPI"
             } else {
                 "AT-SPI (Wayland)"
             }
@@ -223,7 +238,7 @@ impl Native {
             {
                 state.engine.layout = layout;
             }
-            state.message = "Ожидание доступного поля ввода".into();
+            state.message = input_error.unwrap_or_else(|| "Ожидание доступного поля ввода".into());
         }
         Ok(Self {
             connection,
@@ -236,6 +251,8 @@ impl Native {
             portal: None,
             shortcuts_ready: Instant::now(),
             session_layout,
+            input,
+            target_pid: None,
         })
     }
     pub fn poll(&mut self, shared: &Shared) -> Result<()> {
@@ -312,6 +329,17 @@ impl Native {
                 shared.lock().unwrap().message = format!("AT-SPI: {error:#}");
             }
         }
+        if let (Some(input), Some(keyboard)) = (&mut self.input, &mut self.keyboard) {
+            if let Err(error) = input.poll(keyboard, self.target_pid, shared) {
+                shared.lock().unwrap().message = format!("X11: {error:#}");
+            }
+            if input.active
+                && let Some(layout) = keyboard.layout()?
+            {
+                keyboard.reported = Some(layout);
+                shared.lock().unwrap().engine.layout = layout;
+            }
+        }
         for _ in 0..16 {
             if Instant::now() < self.shortcuts_ready {
                 break;
@@ -325,6 +353,14 @@ impl Native {
         Ok(())
     }
     fn focus(&mut self, target: Target, shared: &Shared) -> Result<()> {
+        if self.target.as_ref() != Some(&target) {
+            self.target_pid = zbus::blocking::fdo::DBusProxy::new(&self.connection)
+                .ok()
+                .and_then(|bus| {
+                    bus.get_connection_unix_process_id(target.0.name.clone().into())
+                        .ok()
+                });
+        }
         if target.own_settings(&self.connection) {
             let mut state = shared.lock().unwrap();
             state.focused = false;
@@ -587,10 +623,10 @@ impl Native {
             .keyboard
             .as_ref()
             .context("Поле без EditableText требует X11; на Wayland используйте IBus")?;
-        let plan = keyboard.typing_plan(replacement)?;
+        let plan = keyboard.typing_plan(replacement, final_layout)?;
         let original: String = before.text.chars().skip(start).take(end - start).collect();
         // Restrict backspacing to mapped characters, excluding combining/control sequences.
-        keyboard.typing_plan(&original)?;
+        keyboard.typing_plan(&original, final_layout)?;
         let deadline = Instant::now() + Duration::from_millis(250);
         while let Err(error) = keyboard.idle() {
             if Instant::now() >= deadline {
@@ -773,6 +809,13 @@ impl Native {
                 return self.set_layout(layout, shared);
             }
             _ => {}
+        }
+        if let (Some(input), Some(keyboard)) = (&mut self.input, &mut self.keyboard)
+            && input.active
+        {
+            input.action(action, keyboard, shared)?;
+            keyboard.reported = Some(shared.lock().unwrap().engine.layout);
+            return Ok(());
         }
         let target = self
             .target

@@ -14,5 +14,6 @@ pub mod session_layout;
 pub mod setup;
 pub mod shortcuts;
 pub mod x11;
+pub mod x11_input;
 
-pub mod electron;
+pub mod legacy_launcher;

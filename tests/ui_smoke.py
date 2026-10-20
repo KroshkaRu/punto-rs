@@ -140,7 +140,7 @@ with tempfile.TemporaryDirectory(prefix="punto-ui-") as temp:
                     xtest.XTestFakeKeyEvent(display, code, pressed, 0)
                 xlib.XFlush(display)
                 pump()
-        click(400, 390)
+        click(400, 450)
         set_layout("RU")
         physical("we we ")
         assert read_preview() == "we we ", "Short EN correction did not change the next physical keystrokes"
@@ -194,12 +194,12 @@ with tempfile.TemporaryDirectory(prefix="punto-ui-") as temp:
         key("space")
         assert read_preview() == "user@example.com ", "Preview changed an email address"
         click(166, 110)
-        click(400, 390)
+        click(400, 450)
         paste("руддщ")
         key("space")
         assert read_preview() == "руддщ ", "Preview ignored the automatic correction checkbox"
         click(166, 110)
-        click(400, 390)
+        click(400, 450)
         paste("руддщ")
         key("space")
         assert read_preview() == "hello "

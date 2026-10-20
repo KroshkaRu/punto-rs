@@ -21,3 +21,20 @@ app.whenReady().then(() => {
     `);
   });
 });
+
+// Test-only observation without accessibility, clipboard access, or injected keyboard events.
+if (process.env.PUNTO_TEST_OUTPUT) {
+  const fs = require('fs');
+  app.whenReady().then(() => setInterval(async () => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window || window.isDestroyed()) return;
+    try {
+      const value = await window.webContents.executeJavaScript(`JSON.stringify({
+        text: document.getElementById('field').value ?? document.getElementById('field').textContent,
+        password: document.getElementById('secret').value
+      })`);
+      fs.writeFileSync(process.env.PUNTO_TEST_OUTPUT + '.tmp', value);
+      fs.renameSync(process.env.PUNTO_TEST_OUTPUT + '.tmp', process.env.PUNTO_TEST_OUTPUT);
+    } catch (_) {}
+  }, 20));
+}

@@ -1,4 +1,4 @@
-//! Локальный ярлык Perplexity включает AT-SPI только для приложения; исходный ярлык сохраняется для отката.
+//! Восстановление ярлыков, изменённых версией 0.3.0; новые обходы для приложений не создаются.
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,16 +13,13 @@ struct Backup {
     original: Option<String>,
     installed: String,
 }
-pub fn paths() -> (PathBuf, PathBuf) {
+pub fn path() -> PathBuf {
     let data = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share")
         });
-    (
-        PathBuf::from("/var/lib/snapd/desktop/applications").join(NAME),
-        data.join("applications").join(NAME),
-    )
+    data.join("applications").join(NAME)
 }
 fn backup(target: &Path) -> PathBuf {
     target.with_extension("desktop.punto-rs-backup")
@@ -38,41 +35,6 @@ fn write(path: &Path, value: &str) -> Result<()> {
     file.as_file().sync_all()?;
     file.persist(path)?;
     Ok(())
-}
-pub fn enable(source: &Path, target: &Path) -> Result<()> {
-    ensure!(!installed(target), "Поддержка уже включена");
-    let original = match fs::read_to_string(target) {
-        Ok(s) => Some(s),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e.into()),
-    };
-    let text = match &original {
-        Some(s) => s.clone(),
-        None => fs::read_to_string(source)?,
-    };
-    let mut found = false;
-    let changed = text
-        .lines()
-        .map(|line| {
-            if let Some(exec) = line.strip_prefix("Exec=") {
-                found = true;
-                format!("Exec=env ACCESSIBILITY_ENABLED=1 {exec} --force-renderer-accessibility")
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    ensure!(found, "Ярлык не содержит Exec");
-    write(
-        &backup(target),
-        &toml::to_string(&Backup {
-            original,
-            installed: changed.clone(),
-        })?,
-    )?;
-    write(target, &changed)
 }
 pub fn restore(target: &Path) -> Result<()> {
     let path = backup(target);
@@ -104,25 +66,22 @@ mod tests {
     #[test]
     fn local_override_and_restore_preserve_user_launcher() {
         let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("system.desktop");
         let target = dir.path().join("local.desktop");
-        fs::write(
-            &source,
-            "[Desktop Entry]\nExec=/snap/bin/perplexity-desktop\nName=Perplexity\n",
-        )
-        .unwrap();
         for original in [
             None,
             Some("[Desktop Entry]\nExec=/snap/bin/perplexity-desktop %U\nName=Custom\n"),
         ] {
-            if let Some(s) = original {
-                fs::write(&target, s).unwrap();
-            }
-            enable(&source, &target).unwrap();
-            let changed = fs::read_to_string(&target).unwrap();
-            assert!(changed.contains("Exec=env ACCESSIBILITY_ENABLED=1 "));
-            assert!(changed.contains("--force-renderer-accessibility"));
-            assert!(enable(&source, &target).is_err());
+            let changed = "[Desktop Entry]\nExec=env ACCESSIBILITY_ENABLED=1 app --force-renderer-accessibility\n";
+            fs::write(&target, changed).unwrap();
+            fs::write(
+                backup(&target),
+                toml::to_string(&Backup {
+                    original: original.map(str::to_owned),
+                    installed: changed.into(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
             fs::write(&target, "user edit").unwrap();
             assert!(restore(&target).is_err());
             fs::write(&target, changed).unwrap();

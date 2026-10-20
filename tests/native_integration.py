@@ -86,7 +86,7 @@ with sandbox as temp:
     try:
         pump(lambda: owner('org.punto.Switcher'))
         pump(lambda: call('InputReady')[0])
-        assert call('InputBackend')[0] == ('AT-SPI (Wayland)' if driver else 'X11 + AT-SPI')
+        assert call('InputBackend')[0] == ('AT-SPI (Wayland)' if driver else 'X11 XInput2 + AT-SPI')
         if services:
             call('ConnectShortcuts')
             pump(lambda: 'подключены через портал' in call('Status')[3])

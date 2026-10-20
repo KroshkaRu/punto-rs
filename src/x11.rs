@@ -29,6 +29,8 @@ pub struct Keyboard {
     pub reported: Option<Layout>,
     failures: Vec<String>,
     bindings_valid: bool,
+    symbols_map: Vec<xkb::KeySymMap>,
+    symbols_first: u8,
 }
 
 impl Keyboard {
@@ -51,6 +53,8 @@ impl Keyboard {
             reported: None,
             failures: vec![],
             bindings_valid: false,
+            symbols_map: vec![],
+            symbols_first: 0,
         };
         keyboard.mapping()?;
         Ok(keyboard)
@@ -84,7 +88,205 @@ impl Keyboard {
             .reply()?;
         self.width = map.keysyms_per_keycode as usize;
         self.keys = map.keysyms;
+        let map = self
+            .connection
+            .xkb_get_map(
+                xkb::ID::USE_CORE_KBD.into(),
+                xkb::MapPart::KEY_SYMS,
+                0u16.into(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0u16.into(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )?
+            .reply()?;
+        self.symbols_first = map.first_key_sym;
+        self.symbols_map = map.map.syms_rtrn.context("XKB не вернул символы клавиш")?;
         Ok(())
+    }
+    pub fn matches_hotkey(&self, code: u8, state: u16, hotkey: Hotkey) -> bool {
+        self.symbols(code).contains(&hotkey.key) && hotkey.modifiers as u16 == state & 0xcd
+    }
+    pub fn symbol(&self, code: u8, state: u16) -> Option<u32> {
+        let key = self
+            .symbols_map
+            .get(usize::from(code.checked_sub(self.symbols_first)?))?;
+        let group = usize::from((state >> 13) & 3);
+        let group = if group >= usize::from(key.group_info & 15) {
+            0
+        } else {
+            group
+        };
+        let shift = usize::from(state & 1 != 0);
+        let base = *key.syms.get(group * usize::from(key.width))?;
+        let shifted = key
+            .syms
+            .get(group * usize::from(key.width) + 1)
+            .copied()
+            .filter(|s| *s != 0)
+            .unwrap_or(base);
+        let caps = state & 2 != 0
+            && xkeysym::Keysym::new(base)
+                .key_char()
+                .is_some_and(char::is_alphabetic);
+        Some(if (shift != 0) ^ caps { shifted } else { base })
+    }
+    pub fn window_context(&self) -> Result<(u32, Option<u32>, String, String)> {
+        let focus = self.input_focus()?;
+        let pid_atom = self
+            .connection
+            .intern_atom(false, b"_NET_WM_PID")?
+            .reply()?
+            .atom;
+        let mut window = focus;
+        let mut pid = None;
+        let mut app = String::new();
+        let mut title = String::new();
+        for _ in 0..32 {
+            if window <= 1 || window == self.root {
+                break;
+            }
+            if pid.is_none() {
+                pid = self
+                    .connection
+                    .get_property(false, window, pid_atom, xproto::AtomEnum::CARDINAL, 0, 1)?
+                    .reply()?
+                    .value32()
+                    .and_then(|mut values| values.next());
+            }
+            if app.is_empty() {
+                let value = self
+                    .connection
+                    .get_property(
+                        false,
+                        window,
+                        xproto::AtomEnum::WM_CLASS,
+                        xproto::AtomEnum::STRING,
+                        0,
+                        1024,
+                    )?
+                    .reply()?
+                    .value;
+                app = String::from_utf8_lossy(&value).replace('\0', " ");
+            }
+            if title.is_empty() {
+                let value = self
+                    .connection
+                    .get_property(
+                        false,
+                        window,
+                        xproto::AtomEnum::WM_NAME,
+                        xproto::AtomEnum::ANY,
+                        0,
+                        1024,
+                    )?
+                    .reply()?
+                    .value;
+                title = String::from_utf8_lossy(&value).into_owned();
+            }
+            window = self.connection.query_tree(window)?.reply()?.parent;
+        }
+        Ok((focus, pid, app, title))
+    }
+    /// Batch keyboard edits without changing the clipboard or keymap.
+    pub fn replace_tail(
+        &self,
+        focus: u32,
+        count: usize,
+        text: &str,
+        layout: Layout,
+    ) -> Result<Vec<(u8, bool)>> {
+        anyhow::ensure!(
+            count <= 4096,
+            "Слишком большой фрагмент для клавиатурной замены"
+        );
+        anyhow::ensure!(
+            self.groups.iter().any(|name| match layout {
+                Layout::En => matches!(name.as_str(), "us" | "gb"),
+                Layout::Ru => name == "ru",
+            }),
+            "Нужная раскладка не настроена в системе"
+        );
+        let plan = self.typing_plan(text, layout)?;
+        let backspace = self
+            .keys
+            .chunks(self.width)
+            .position(|keys| keys.contains(&0xff08))
+            .context("Нет Backspace")? as u8
+            + self.first;
+        let shift = self
+            .keys
+            .chunks(self.width)
+            .position(|keys| keys.contains(&0xffe1))
+            .context("Нет Shift")? as u8
+            + self.first;
+        self.connection.grab_server()?.check()?;
+        let result = (|| -> Result<Vec<(u8, bool)>> {
+            anyhow::ensure!(
+                self.input_focus()? == focus,
+                "Фокус изменился; замена отменена"
+            );
+            self.idle()?;
+            let mut requests = vec![];
+            let mut injected = vec![];
+            let mut key = |code, pressed, delay| -> Result<()> {
+                injected.push((code, pressed));
+                requests.push(self.connection.xtest_fake_input(
+                    if pressed {
+                        xproto::KEY_PRESS_EVENT
+                    } else {
+                        xproto::KEY_RELEASE_EVENT
+                    },
+                    code,
+                    delay,
+                    self.root,
+                    0,
+                    0,
+                    0,
+                )?);
+                Ok(())
+            };
+            for _ in 0..count {
+                key(backspace, true, 0)?;
+                key(backspace, false, 0)?;
+            }
+            let mut current = self.layout()?;
+            let mut plan = plan.into_iter().peekable();
+            while let Some((group, code, shifted)) = plan.next() {
+                if current != Some(group) {
+                    self.switch(group)?;
+                    current = Some(group);
+                }
+                if shifted {
+                    key(shift, true, 0)?;
+                }
+                key(code, true, 0)?;
+                // Let XTest process the last character before a different XKB group takes effect.
+                let next_group = plan.peek().map(|next| next.0).unwrap_or(layout);
+                key(code, false, u32::from(next_group != group))?;
+                if shifted {
+                    key(shift, false, 0)?;
+                }
+            }
+            for request in requests {
+                request.check()?;
+            }
+            self.switch(layout)?;
+            Ok(injected)
+        })();
+        self.connection.ungrab_server()?.check()?;
+        result
     }
     pub fn layout(&self) -> Result<Option<Layout>> {
         let state = self
@@ -127,7 +329,7 @@ impl Keyboard {
         Ok(())
     }
     /// Plan against the existing XKB groups; never rewrite the user's keymap.
-    pub fn typing_plan(&self, text: &str) -> Result<Vec<(Layout, u8, bool)>> {
+    pub fn typing_plan(&self, text: &str, preferred: Layout) -> Result<Vec<(Layout, u8, bool)>> {
         anyhow::ensure!(
             text.chars().count() <= 4096,
             "Слишком большой фрагмент для клавиатурной замены"
@@ -136,40 +338,16 @@ impl Keyboard {
             !text.chars().any(char::is_control),
             "Клавиатурная замена не поддерживает управляющие символы"
         );
-        let map = self
-            .connection
-            .xkb_get_map(
-                xkb::ID::USE_CORE_KBD.into(),
-                xkb::MapPart::KEY_SYMS,
-                0u16.into(),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0u16.into(),
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            )?
-            .reply()?;
-        let symbols = map.map.syms_rtrn.context("XKB не вернул символы клавиш")?;
         text.chars()
             .map(|ch| {
-                for layout in [Layout::En, Layout::Ru] {
+                for layout in [preferred, preferred.other()] {
                     let Some(group) = self.groups.iter().position(|name| match layout {
                         Layout::En => matches!(name.as_str(), "us" | "gb"),
                         Layout::Ru => name == "ru",
                     }) else {
                         continue;
                     };
-                    for (index, key) in symbols.iter().enumerate() {
+                    for (index, key) in self.symbols_map.iter().enumerate() {
                         let group = if group >= usize::from(key.group_info & 15) {
                             0
                         } else {
@@ -183,7 +361,7 @@ impl Keyboard {
                                     xkeysym::Keysym::new(*symbol).key_char() == Some(ch)
                                 })
                             {
-                                return Ok((layout, map.first_key_sym + index as u8, shift != 0));
+                                return Ok((layout, self.symbols_first + index as u8, shift != 0));
                             }
                         }
                     }

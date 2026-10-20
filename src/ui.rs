@@ -184,24 +184,28 @@ impl Settings {
             });
             ui.label("IBus используется только по вашему выбору. Кнопка выбирает движок в уже запущенном IBus; службы и системные настройки не меняются.");
         } else {
-            ui.label("Нативный режим использует AT-SPI. В X11 поля без EditableText редактируются через клавиатуру с проверкой текста и фокуса. Защищённые и недоступные поля пропускаются.");
+            ui.label("Нативный режим использует общий перехват X11 и AT-SPI. При доступном AT-SPI проверяются текст, курсор и роль поля.");
         }
-        let (source, target) = punto_rs::electron::paths();
-        if source.exists() || punto_rs::electron::installed(&target) {
-            let enabled = punto_rs::electron::installed(&target);
-            if ui
-                .button(if enabled {
-                    "Отключить поддержку Perplexity"
-                } else {
-                    "Включить поддержку Perplexity"
-                })
+        if std::env::var("XDG_SESSION_TYPE").as_deref() != Ok("wayland") {
+            ui.checkbox(
+                &mut self.config.x11_unverified,
+                "Общий перехват X11 для полей без AT-SPI",
+            );
+            ui.label("Распознанные пароли пропускаются. В неизвестных полях исправление сопровождается звуком. Без AT-SPI невозможно распознать пароль; ошибочное исправление можно отменить горячей клавишей.");
+        }
+        let legacy_launcher = punto_rs::legacy_launcher::path();
+        if punto_rs::legacy_launcher::installed(&legacy_launcher)
+            && ui
+                .button("Восстановить ярлык, изменённый версией 0.3.0")
                 .clicked()
-            {
-                self.message = match if enabled { punto_rs::electron::restore(&target) } else { punto_rs::electron::enable(&source, &target) } {
-                    Ok(()) => "Ярлык обновлён. Полностью закройте Perplexity и запустите через меню приложений.".into(),
-                    Err(e) => format!("Ошибка: {e:#}"),
-                };
-            }
+        {
+            self.message = match punto_rs::legacy_launcher::restore(&legacy_launcher) {
+                Ok(()) => {
+                    "Прежний ярлык восстановлен. Общему перехвату X11 специальные ярлыки не нужны."
+                        .into()
+                }
+                Err(error) => error.to_string(),
+            };
         }
         ui.separator();
         ui.label("Проверка автопереключения: руддщ + пробел = hello");
@@ -407,6 +411,7 @@ impl Settings {
             };
             self.check_hotkeys();
         }
+        ui.label("Alt может активировать меню приложения и увести фокус из текста. Кнопка «Подобрать» предлагает Ctrl+Super; проверьте сочетание в нужных приложениях.");
         ui.label("Пустая третья клавиша отключает действие. Неизвестные захваты других приложений принудительно не отбираются.");
     }
     fn sync_hotkey_parts(&mut self) {
