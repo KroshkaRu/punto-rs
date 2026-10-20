@@ -128,6 +128,12 @@ struct Undo {
     layout: Layout,
 }
 
+struct ShortcutFocus {
+    window: u32,
+    target: Option<Target>,
+    pointer_revision: u64,
+}
+
 pub struct Native {
     connection: Connection,
     events: Receiver<zbus::Message>,
@@ -138,6 +144,7 @@ pub struct Native {
     last_keyboard: Instant,
     portal: Option<crate::portal::Portal>,
     shortcuts_ready: Instant,
+    shortcut_focus: Option<ShortcutFocus>,
     session_layout: Option<crate::session_layout::SessionLayout>,
     input: Option<crate::x11_input::InputBackend>,
     target_pid: Option<u32>,
@@ -253,6 +260,7 @@ impl Native {
             last_keyboard: Instant::now() - Duration::from_secs(1),
             portal: None,
             shortcuts_ready: Instant::now(),
+            shortcut_focus: None,
             session_layout,
             input,
             target_pid: None,
@@ -319,9 +327,28 @@ impl Native {
         if let Some(keyboard) = &mut self.keyboard {
             let actions = keyboard.actions()?;
             if !actions.is_empty() {
-                // Let toolkits publish focus/caret changes after a passive keyboard grab.
                 self.shortcuts_ready = Instant::now() + Duration::from_millis(60);
-                shared.lock().unwrap().actions.extend(actions);
+                if self.shortcut_focus.is_none() {
+                    let (window, pid, _, _) = keyboard.window_context()?;
+                    self.shortcut_focus = Some(ShortcutFocus {
+                        window,
+                        target: self
+                            .target
+                            .clone()
+                            .filter(|_| pid.is_some() && pid == self.target_pid),
+                        pointer_revision: self
+                            .input
+                            .as_ref()
+                            .map_or(0, |input| input.pointer_revision),
+                    });
+                }
+                let mut state = shared.lock().unwrap();
+                for action in actions {
+                    // One held chord must not enqueue autorepeat as multiple edits.
+                    if state.actions.len() < 16 && !state.actions.contains(&action) {
+                        state.actions.push_back(action);
+                    }
+                }
             }
         }
         for _ in 0..64 {
@@ -358,12 +385,40 @@ impl Native {
             self.undo = None;
             self.last_edit = None;
         }
+        if self.shortcut_focus.is_some()
+            && let Some(keyboard) = &self.keyboard
+            && !keyboard.keys_released()?
+        {
+            // Focus returns after the grab ends, which can outlast a fixed delay.
+            self.shortcuts_ready = Instant::now() + Duration::from_millis(60);
+        }
         for _ in 0..16 {
             if Instant::now() < self.shortcuts_ready {
                 break;
             }
+            if let (Some(context), Some(keyboard)) = (&self.shortcut_focus, &self.keyboard)
+                && (keyboard.input_focus().ok() != Some(context.window)
+                    || context
+                        .target
+                        .as_ref()
+                        .is_some_and(|target| self.target.as_ref() != Some(target))
+                    || self
+                        .input
+                        .as_ref()
+                        .is_some_and(|input| input.pointer_revision != context.pointer_revision))
+            {
+                let mut state = shared.lock().unwrap();
+                state.actions.clear();
+                state.message =
+                    "Фокус или выделение изменились; действие горячей клавиши отменено".into();
+                self.shortcut_focus = None;
+                break;
+            }
             let action = shared.lock().unwrap().actions.pop_front();
-            let Some(action) = action else { break };
+            let Some(action) = action else {
+                self.shortcut_focus = None;
+                break;
+            };
             if let Err(error) = self.action(action, shared) {
                 shared.lock().unwrap().message = error.to_string();
             }

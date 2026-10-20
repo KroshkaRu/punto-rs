@@ -147,6 +147,7 @@ pub struct InputBackend {
     injected: VecDeque<(u8, bool)>,
     undo: Option<Undo>,
     pub active: bool,
+    pub pointer_revision: u64,
     enter_word: Option<String>,
     enter_dirty: bool,
 }
@@ -164,6 +165,7 @@ impl InputBackend {
             injected: VecDeque::new(),
             undo: None,
             active: false,
+            pointer_revision: 0,
             enter_word: None,
             enter_dirty: false,
         })
@@ -225,6 +227,9 @@ impl InputBackend {
                 drained = true;
                 break;
             };
+            if matches!(event, Input::Reset) {
+                self.pointer_revision = self.pointer_revision.wrapping_add(1);
+            }
             if matches!(event, Input::Barrier) {
                 self.ignoring = false;
                 continue;

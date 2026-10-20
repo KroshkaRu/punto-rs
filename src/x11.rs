@@ -377,6 +377,15 @@ impl Keyboard {
     pub fn input_focus(&self) -> Result<u32> {
         Ok(self.connection.get_input_focus()?.reply()?.focus)
     }
+    pub fn keys_released(&self) -> Result<bool> {
+        Ok(self
+            .connection
+            .query_keymap()?
+            .reply()?
+            .keys
+            .iter()
+            .all(|byte| *byte == 0))
+    }
     pub fn idle(&self) -> Result<()> {
         self.idle_except(None)
     }
@@ -636,6 +645,48 @@ impl Keyboard {
         self.switch(layout)?;
         Ok(())
     }
+    fn suppress_alt_menu(&self, event: &xproto::KeyPressEvent) -> Result<()> {
+        if u16::from(event.state) & 0xcd != 8 {
+            return Ok(());
+        }
+        let control = (self.first..=self.connection.setup().max_keycode)
+            .find(|code| self.symbols(*code).contains(&0xffe4))
+            .context("Нет Control_R")?;
+        let focus = self.input_focus()?;
+        // The grabbed main key is invisible to the app; prevent its Alt release becoming a menu tap.
+        for response_type in [xproto::KEY_PRESS_EVENT, xproto::KEY_RELEASE_EVENT] {
+            let key = xproto::KeyPressEvent {
+                response_type,
+                detail: control,
+                event: focus,
+                root: self.root,
+                time: event.time,
+                same_screen: true,
+                state: (u16::from(event.state)
+                    | if response_type == xproto::KEY_RELEASE_EVENT {
+                        4
+                    } else {
+                        0
+                    })
+                .into(),
+                ..Default::default()
+            };
+            self.connection
+                .send_event(
+                    true,
+                    focus,
+                    if response_type == xproto::KEY_PRESS_EVENT {
+                        xproto::EventMask::KEY_PRESS
+                    } else {
+                        xproto::EventMask::KEY_RELEASE
+                    },
+                    key,
+                )?
+                .check()?;
+        }
+        self.connection.flush()?;
+        Ok(())
+    }
     pub fn actions(&mut self) -> Result<Vec<Action>> {
         let mut actions = vec![];
         while let Some(event) = self.connection.poll_for_event()? {
@@ -647,6 +698,7 @@ impl Keyboard {
                         .iter()
                         .find(|(code, mods, _)| *code == key.detail && *mods == modifiers)
                     {
+                        self.suppress_alt_menu(&key)?;
                         actions.push(*action);
                     } else if self.enter_grabs.contains(&(key.detail, modifiers)) {
                         self.enter = Some(key);
