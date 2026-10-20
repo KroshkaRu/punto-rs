@@ -159,6 +159,7 @@ with contextlib.ExitStack() as cleanup, tempfile.TemporaryDirectory(prefix='punt
             subprocess.run(['xdotool', 'key', 'ctrl+a', 'BackSpace'], check=True)
             call('SetLayout', GLib.Variant('(s)', ('EN',)))
             physical('privet')
+            pump(lambda: text() == 'privet')
             subprocess.run(['xdotool', 'key', 'ctrl+a', 'keydown', 'Alt_L', 'keydown', 'Next'], check=True)
             time.sleep(0.3)
             assert text() == 'privet', 'Transliteration ran before shortcut release'
