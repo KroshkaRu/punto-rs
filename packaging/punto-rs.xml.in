@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component>
+  <name>org.freedesktop.IBus.Punto</name>
+  <description>Russian and English automatic layout switcher</description>
+  <exec>@BINARY@ --ibus</exec>
+  <version>0.2.4</version>
+  <license>MIT</license>
+  <author>Punto RS contributors</author>
+  <engines>
+    <engine>
+      <name>punto-rs</name>
+      <longname>Punto RS (RU ↔ EN)</longname>
+      <description>Automatic Russian/English layout correction</description>
+      <language>ru</language>
+      <license>MIT</license>
+      <author>Punto RS contributors</author>
+      <layout>us</layout>
+      <icon>punto-rs</icon>
+      <symbol>EN</symbol>
+      <rank>0</rank>
+    </engine>
+  </engines>
+</component>

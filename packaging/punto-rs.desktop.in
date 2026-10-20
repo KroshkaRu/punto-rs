@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Punto RS
+GenericName=Automatic keyboard layout switcher
+Comment=Russian and English layout correction
+Comment[ru]=Автоматическое исправление раскладки русского и английского
+Exec=@BINARY@
+Icon=punto-rs
+Terminal=false
+Categories=Utility;Accessibility;
+StartupNotify=true
+StartupWMClass=punto-rs

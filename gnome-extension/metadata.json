@@ -1,0 +1,7 @@
+{
+  "uuid": "punto-focus@punto-rs.local",
+  "name": "Punto RS: active application",
+  "description": "Provides active application identity and window title to Punto RS for application exceptions. Does not capture keyboard or clipboard.",
+  "shell-version": ["42", "43", "44", "45", "46", "47", "48", "49", "50", "51"],
+  "version": 1
+}

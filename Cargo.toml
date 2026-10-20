@@ -1,0 +1,25 @@
+[package]
+name = "punto-rs"
+version = "0.2.4"
+edition = "2024"
+rust-version = "1.88"
+description = "Russian/English automatic layout switcher for Linux desktops"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+atspi-proxies = "0.9"
+blocking = "1"
+eframe = { version = "0.33", default-features = false, features = ["accesskit", "default_fonts", "glow", "x11", "wayland"] }
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+spellbook = "0.4"
+tempfile = "3"
+toml = "0.9"
+x11rb = { version = "0.13", features = ["xkb"] }
+zbus = { version = "5", features = ["blocking-api"] }
+zbus_xml = "5"
+
+[profile.release]
+lto = "thin"
+strip = true

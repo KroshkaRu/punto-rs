@@ -1,0 +1,40 @@
+name: Rust
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: ubuntu:${{ matrix.ubuntu }}
+    strategy:
+      matrix:
+        ubuntu: ['22.04', '24.04', '26.04']
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y build-essential curl pkg-config ca-certificates at-spi2-core x11-xkb-utils ibus ibus-gtk3 python3-gi gir1.2-ibus-1.0 gir1.2-gtk-3.0 hunspell-ru hunspell-en-us dbus-x11 xvfb xauth xdotool libegl1 libgl1 libxkbcommon-x11-0 libxi6 libxrandr2 libxcursor1 libxinerama1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --all-targets --locked
+      - run: cargo run --locked -- --check
+      - run: cargo build --locked && PUNTO_TEST_GTK=1 xvfb-run -a dbus-run-session -- python3 tests/ibus_integration.py target/debug/punto-rs
+      - run: xvfb-run -a dbus-run-session -- python3 tests/native_integration.py target/debug/punto-rs
+      - run: PUNTO_TEST_DRIVER=gnome xvfb-run -a dbus-run-session -- python3 tests/native_integration.py target/debug/punto-rs
+      - run: PUNTO_TEST_DRIVER=kde xvfb-run -a dbus-run-session -- python3 tests/native_integration.py target/debug/punto-rs
+      - run: PUNTO_TEST_DRIVER=fcitx xvfb-run -a dbus-run-session -- python3 tests/native_integration.py target/debug/punto-rs
+      - run: xvfb-run -a dbus-run-session -- python3 tests/ui_smoke.py target/debug/punto-rs /tmp/settings.png
+      - if: matrix.ubuntu == '22.04'
+        run: ./scripts/build-deb.sh --native
+      - if: matrix.ubuntu == '22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: punto-rs-ubuntu22-amd64
+          path: |
+            dist/*.deb
+            dist/SHA256SUMS

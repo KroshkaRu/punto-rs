@@ -1,0 +1,10 @@
+Material Design Icons by Google, licensed under Apache License 2.0 (see LICENSE).
+Source: material-design-icons/src, materialiconsround/24px.svg:
+  action/translate
+  hardware/keyboard
+  action/settings
+  content/undo
+  action/swap_horiz
+
+Punto RS modifications: color, application badge background, rasterization,
+and RU/EN status badge under the translate icon. Original SVG paths are preserved.
