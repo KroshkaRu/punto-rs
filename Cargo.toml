@@ -1,6 +1,6 @@
 [package]
 name = "punto-rs"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Russian/English automatic layout switcher for Linux desktops"
@@ -8,6 +8,9 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1"
+async-io = "2"
+futures-lite = "2"
+pulseaudio = "0.3.2"
 atspi-proxies = "0.9"
 blocking = "1"
 eframe = { version = "0.33", default-features = false, features = ["accesskit", "default_fonts", "glow", "x11", "wayland"] }

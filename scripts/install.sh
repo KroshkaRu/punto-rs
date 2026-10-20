@@ -46,6 +46,7 @@ PY
 install -m 644 -- "$root/packaging/punto-rs.svg" "$data_dir/icons/hicolor/scalable/apps/punto-rs.svg"
 mkdir -p "$data_dir/licenses/punto-rs"
 install -m 644 "$root/assets/material-icons/LICENSE" "$root/assets/material-icons/NOTICE" "$data_dir/licenses/punto-rs/"
+install -m 644 "$root/assets/licenses/pulseaudio-LICENSE" "$data_dir/licenses/punto-rs/"
 if command -v update-desktop-database >/dev/null; then update-desktop-database "$data_dir/applications"; fi
 if command -v gtk-update-icon-cache >/dev/null; then gtk-update-icon-cache -f -t "$data_dir/icons/hicolor" >/dev/null 2>&1 || true; fi
 printf '%s\n' 'Установлено для текущего пользователя. Откройте Punto RS в меню приложений.' 'По умолчанию используется нативный ввод без смены системных раскладок и метода ввода.' 'IBus — добровольный режим. GNOME Wayland: см. README.md.'

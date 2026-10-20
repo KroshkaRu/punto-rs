@@ -1,10 +1,14 @@
 # Punto RS — переключатель раскладки для Ubuntu и MATE
 
-[**Скачать .deb v0.4.0 (amd64)**](https://github.com/KroshkaRu/punto-rs/releases/download/v0.4.0/punto-rs_0.4.0_amd64.deb) · [Все релизы и контрольные суммы](https://github.com/KroshkaRu/punto-rs/releases)
+[**Скачать .deb v0.4.1 (amd64)**](https://github.com/KroshkaRu/punto-rs/releases/download/v0.4.1/punto-rs_0.4.1_amd64.deb) · [Все релизы и контрольные суммы](https://github.com/KroshkaRu/punto-rs/releases)
 
 Переключатель RU ↔ EN на Rust для Ubuntu 22.04–26.04. Общие словари Hunspell, правила, исключения, автозамены и настройки; несколько способов подключения к приложениям.
 
 **Начиная с 0.2.0 по умолчанию используется нативный режим без IBus.** Программа не вызывает `im-config`, не запускает IBus/Fcitx, не заменяет список системных раскладок и сочетание Ctrl+Shift. При исправлении слова выбирается уже существующая RU/EN; для пользовательского сочетания регистрируется отдельная горячая клавиша.
+
+## Исправление установки в 0.4.1
+
+Убрана ошибочная зависимость `libcanberra-gtk3-bin`, мешавшая установке. Проигрыватель на Rust и сам сигнал включены в бинарник внутри `.deb`: `canberra-gtk-play`, внешние проигрыватели и звуковая тема не нужны. Используется работающий звуковой сервер рабочего стола PulseAudio или PipeWire с PulseAudio-интерфейсом. Проверка сигнала: `punto-rs --test-sound`.
 
 ## Новое в 0.4.0
 
@@ -39,14 +43,14 @@
 Скачайте `.deb` из [релиза](https://github.com/KroshkaRu/punto-rs/releases/latest). В каталоге со скачанным файлом выполните:
 
 ```bash
-install -m 644 ./punto-rs_0.4.0_amd64.deb /tmp/punto-rs_0.4.0_amd64.deb
-sudo apt install /tmp/punto-rs_0.4.0_amd64.deb
+install -m 644 ./punto-rs_0.4.1_amd64.deb /tmp/punto-rs_0.4.1_amd64.deb
+sudo apt install /tmp/punto-rs_0.4.1_amd64.deb
 punto-rs
 ```
 
 В релизе есть `SHA256SUMS`; скачанный пакет можно проверить командой `sha256sum -c SHA256SUMS`. Если собирали самостоятельно, пакет находится в `dist/`.
 
-Если APT пишет `Download is performed unsandboxed as root`, пакет недоступен пользователю `_apt` внутри домашнего каталога. Установка при этом не отменяется. Чтобы убрать уведомление, скопируйте `.deb` в `/tmp` с правами `644` и передайте APT путь `/tmp/punto-rs_0.4.0_amd64.deb`; открывать доступ ко всему домашнему каталогу не нужно.
+Если APT пишет `Download is performed unsandboxed as root`, пакет недоступен пользователю `_apt` внутри домашнего каталога. Установка при этом не отменяется. Чтобы убрать уведомление, скопируйте `.deb` в `/tmp` с правами `644` и передайте APT путь `/tmp/punto-rs_0.4.1_amd64.deb`; открывать доступ ко всему домашнему каталогу не нужно.
 
 Откроются настройки и трей. Закрытие настроек оставляет фоновый процесс; завершение — «Выход» в трее. Для запуска при входе: **Общие → Запускать при входе в систему → Сохранить**. Создаётся `$XDG_CONFIG_HOME/autostart/punto-rs.desktop`, обычно `~/.config/autostart/punto-rs.desktop`; запускается только фоновой процесс.
 
@@ -60,7 +64,7 @@ punto-rs
 ./scripts/build-deb.sh
 ```
 
-Скрипт сам создаёт контейнер Ubuntu 22.04 с Rust 1.88.0, компилирует код с `Cargo.lock` и вызывает упаковщик. Результат — `dist/punto-rs_0.4.0_amd64.deb` на x86_64. Сборка на glibc 2.35 обеспечивает базу для Ubuntu 22.04–26.04. Нужны доступ к Docker и сеть для загрузки образа и зависимостей; контейнер использует сеть хоста. Исходники монтируются только для чтения; артефакты и кеши остаются в `target/` и принадлежат запустившему пользователю. Скрипт не устанавливает пакет и не запрашивает sudo.
+Скрипт сам создаёт контейнер Ubuntu 22.04 с Rust 1.88.0, компилирует код с `Cargo.lock` и вызывает упаковщик. Результат — `dist/punto-rs_0.4.1_amd64.deb` на x86_64. Сборка на glibc 2.35 обеспечивает базу для Ubuntu 22.04–26.04. Нужны доступ к Docker и сеть для загрузки образа и зависимостей; контейнер использует сеть хоста. Исходники монтируются только для чтения; артефакты и кеши остаются в `target/` и принадлежат запустившему пользователю. Скрипт не устанавливает пакет и не запрашивает sudo.
 
 Для сборки установленным Rust 1.88+ на текущей машине:
 
@@ -182,6 +186,7 @@ cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --all-targets --locked
 cargo build --locked
+python3 tests/sound_integration.py target/debug/punto-rs
 xvfb-run -a dbus-run-session -- python3 tests/native_integration.py target/debug/punto-rs
 PUNTO_TEST_GTK=1 xvfb-run -a dbus-run-session -- python3 tests/ibus_integration.py target/debug/punto-rs
 xvfb-run -a dbus-run-session -- python3 tests/ui_smoke.py target/debug/punto-rs /tmp/settings.png
@@ -196,7 +201,9 @@ PUNTO_TEST_RICH=1 PUNTO_TEST_ELECTRON=/path/to/electron xvfb-run -a dbus-run-ses
 
 `PUNTO_TEST_DRIVER=gnome|kde|fcitx` запускает тот же текстовый тест через протоколы адаптеров и фиктивный GlobalShortcuts portal, включая отмену разрешения. Здесь имитируются службы композитора/контроллера; это **не проверка живого Wayland-сеанса или настоящего Fcitx5**. Дополнительно проверены GNOME Text Editor 46.3 с MATE/marco и сохранением раскладки по окнам, а также textarea/contenteditable на Electron 40.2.1 из установленного Perplexity в отдельной сессии. Открытый пользовательский сеанс Perplexity не автоматизировался; Qt и все Snap/Flatpak этим не покрываются. Живые GNOME/Plasma/расширение требуют отдельной проверки.
 
-CI содержит Ubuntu 22.04, 24.04, 26.04. Задание Ubuntu 22.04 также вызывает `scripts/build-deb.sh --native` и сохраняет пакет с контрольной суммой как артефакт запуска. Готовые публичные установщики находятся в [Releases](https://github.com/KroshkaRu/punto-rs/releases). Переносимый deb собирается на Ubuntu 22.04:
+Проверка звука запускает отдельный PulseAudio с виртуальным выходом и записывает реальный PCM: нужны `pulseaudio` и `pulseaudio-utils` только для тестов. Пользовательские динамики не используются. Проверяются также отсутствие cookie-файла, недоступный и зависший аудиосервер.
+
+CI содержит Ubuntu 22.04, 24.04, 26.04; на каждой версии пакет действительно устанавливается через APT и проверяется встроенный звук. Задание Ubuntu 22.04 также вызывает `scripts/build-deb.sh --native` и сохраняет пакет с контрольной суммой как артефакт запуска. Готовые публичные установщики находятся в [Releases](https://github.com/KroshkaRu/punto-rs/releases). Переносимый deb собирается на Ubuntu 22.04:
 
 ```bash
 ./scripts/package-deb.sh target/ubuntu22/release/punto-rs
@@ -213,6 +220,7 @@ CI содержит Ubuntu 22.04, 24.04, 26.04. Задание Ubuntu 22.04 та
 | `dictionary.rs`, `layout.rs` | Общие словари, короткие слова, пунктуация и соответствие клавиш RU/EN |
 | `shortcuts.rs`, `legacy_launcher.rs` | Проверка/восстановление системных привязок и откат ярлыка версии 0.3.0 |
 | `native.rs`, `x11.rs`, `x11_input.rs` | AT-SPI, общий XInput2-перехват, XTest, откат, существующие группы XKB и горячие клавиши |
+| `sound.rs` | Встроенный PCM-сигнал и Rust-клиент PulseAudio / PipeWire Pulse |
 | `engine.rs`, `service.rs` | Машина ввода IBus и API управления D-Bus |
 | `session_layout.rs`, `portal.rs`, `desktop.rs` | Адаптеры рабочего стола, разрешение сочетаний Wayland и контекст приложения |
 | `ui.rs`, `tray.rs`, `icons.rs`, `autostart.rs` | Настройки, поле проверки, трей MATE/Ayatana, Material-иконки и автозапуск |
@@ -222,4 +230,4 @@ CI содержит Ubuntu 22.04, 24.04, 26.04. Задание Ubuntu 22.04 та
 
 ## Лицензия
 
-Исходники — [MIT](LICENSE). Material Design Icons — Apache 2.0; лицензия и атрибуция находятся в `assets/material-icons/LICENSE` и `assets/material-icons/NOTICE`. Проект независим от оригинального Punto Switcher и не является его официальной версией.
+Исходники — [MIT](LICENSE). Material Design Icons — Apache 2.0; лицензия и атрибуция находятся в `assets/material-icons/LICENSE` и `assets/material-icons/NOTICE`. Встроенный Rust-клиент [pulseaudio](https://github.com/colinmarc/pulseaudio-rs) — MIT; копия лицензии: `assets/licenses/pulseaudio-LICENSE`, также включена в пакет. Проект независим от оригинального Punto Switcher и не является его официальной версией.

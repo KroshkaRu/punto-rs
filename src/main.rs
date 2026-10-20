@@ -34,9 +34,10 @@ fn run() -> Result<()> {
     let path = config::config_path();
     match args.first().map(String::as_str) {
         Some("--help" | "-h") => println!(
-            "Punto RS — RU ↔ EN\n\n  punto-rs                 Настройки и tray\n  punto-rs --daemon         Нативный ввод и tray\n  punto-rs --ibus           Добровольный движок IBus и tray\n  punto-rs --backends       Доступные способы подключения\n  punto-rs --settings       Настройки и tray\n  punto-rs --check          Проверить настройки и словари\n  punto-rs --convert TEXT   Исправить раскладку текста (без TEXT читает stdin)\n  punto-rs --default-config Показать настройки по умолчанию\n\nУстановка: scripts/install.sh. Подробности: README.md"
+            "Punto RS — RU ↔ EN\n\n  punto-rs                 Настройки и tray\n  punto-rs --daemon         Нативный ввод и tray\n  punto-rs --ibus           Добровольный движок IBus и tray\n  punto-rs --backends       Доступные способы подключения\n  punto-rs --settings       Настройки и tray\n  punto-rs --test-sound     Проверить встроенный звуковой сигнал\n  punto-rs --check          Проверить настройки и словари\n  punto-rs --convert TEXT   Исправить раскладку текста (без TEXT читает stdin)\n  punto-rs --default-config Показать настройки по умолчанию\n\nУстановка: scripts/install.sh. Подробности: README.md"
         ),
         Some("--version" | "-V") => println!("punto-rs {}", env!("CARGO_PKG_VERSION")),
+        Some("--test-sound") => punto_rs::sound::play()?,
         Some("--backends") => println!("{}", punto_rs::setup::diagnostics()?),
         Some("--convert") => {
             let mut text = args[1..].join(" ");

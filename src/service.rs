@@ -569,14 +569,8 @@ pub fn running() -> bool {
 
 pub(crate) fn play_sound(shared: Shared) {
     std::thread::spawn(move || {
-        let result = Command::new("canberra-gtk-play")
-            .args(["-i", "complete"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        if !result.is_ok_and(|status| status.success()) {
-            shared.lock().unwrap().message =
-                "Звук недоступен; установите libcanberra-gtk3-bin и тему звуков".into();
+        if let Err(error) = crate::sound::play() {
+            shared.lock().unwrap().message = format!("Звук недоступен: {error:#}");
         }
     });
 }

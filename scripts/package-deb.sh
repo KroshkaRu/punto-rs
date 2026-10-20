@@ -18,12 +18,13 @@ install -m 644 "$project/README.md" "$project/LICENSE" "$stage/usr/share/doc/pun
 cp -R "$project/docs" "$stage/usr/share/doc/punto-rs/"
 install -m 644 "$project/assets/material-icons/LICENSE" "$stage/usr/share/doc/punto-rs/material-icons-LICENSE"
 install -m 644 "$project/assets/material-icons/NOTICE" "$stage/usr/share/doc/punto-rs/material-icons-NOTICE"
+install -m 644 "$project/assets/licenses/pulseaudio-LICENSE" "$stage/usr/share/doc/punto-rs/"
 cat > "$stage/DEBIAN/control" <<EOF
 Package: punto-rs
 Version: $version
 Architecture: $arch
 Maintainer: Punto RS contributors <maintainers@punto-rs.local>
-Depends: libc6 (>= 2.35), libgcc-s1, at-spi2-core, hunspell-ru, hunspell-en-us, libx11-6, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libegl1, libgl1, libxi6, libxrandr2, libxcursor1, libxinerama1, libcanberra-gtk3-bin
+Depends: libc6 (>= 2.35), libgcc-s1, at-spi2-core, hunspell-ru, hunspell-en-us, libx11-6, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libegl1, libgl1, libxi6, libxrandr2, libxcursor1, libxinerama1
 Suggests: ibus (>= 1.5.26), ibus-gtk3, gnome-shell-extension-appindicator
 Section: utils
 Priority: optional

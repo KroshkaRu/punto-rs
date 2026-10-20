@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Chromium/Electron Text-only fields, physical keys and AT-SPI, on a disposable X11/D-Bus session."""
+import contextlib
+from sound_fixture import audio_server
 import json
 import ctypes
 import os
@@ -35,19 +37,14 @@ def editable(node):
         pass
     return None
 
-with tempfile.TemporaryDirectory(prefix='punto-electron-') as directory:
+with contextlib.ExitStack() as cleanup, tempfile.TemporaryDirectory(prefix='punto-electron-') as directory:
     os.environ.update(ACCESSIBILITY_ENABLED='1', HOME=directory, XDG_CONFIG_HOME=directory, GTK_IM_MODULE='xim', XMODIFIERS='@im=none', NO_AT_BRIDGE='0')
     os.environ['XDG_SESSION_TYPE'] = os.environ.get('PUNTO_TEST_SESSION', 'x11')
     raw = os.environ.get('PUNTO_TEST_RAW') == '1'
     if raw:
         os.environ['ACCESSIBILITY_ENABLED'] = '0'
         os.environ['PUNTO_TEST_OUTPUT'] = directory + '/output.json'
-        executable = pathlib.Path(directory) / 'bin'
-        executable.mkdir()
-        sound = executable / 'canberra-gtk-play'
-        sound.write_text('#!/bin/sh\necho sound >> "' + directory + '/sounds"\n')
-        sound.chmod(0o755)
-        os.environ['PATH'] = str(executable) + ':' + os.environ['PATH']
+        recorded_sound = cleanup.enter_context(audio_server())
     config = pathlib.Path(directory) / 'punto-rs'
     config.mkdir()
     (config / 'config.toml').write_text('backend = "native"\nremember_layout = true\n' + ('[[hotkeys]]\naction = "convert_word"\nkeys = "Ctrl+Super+W"\n[[hotkeys]]\naction = "undo"\nkeys = "Ctrl+Super+Z"\n[[hotkeys]]\naction = "convert_selection"\nkeys = "Ctrl+Super+S"\n' if raw else ''))
@@ -141,7 +138,7 @@ with tempfile.TemporaryDirectory(prefix='punto-electron-') as directory:
                 pump(lambda: contents().get('password') == 'привет ')
                 call('ActivateAction', GLib.Variant('(s)', ('undo',)))
                 pump(lambda: contents().get('password') == 'ghbdtn ')
-                assert pathlib.Path(directory + '/sounds').read_text().count('sound') >= 4
+                recorded_sound(4)
                 assert not find(), 'Accessibility was enabled by the backend'
                 print('Generic X11 without AT-SPI: corrections, layout, undo, sound and unchanged accessibility OK', flush=True)
             else:
