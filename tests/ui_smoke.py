@@ -246,10 +246,17 @@ with tempfile.TemporaryDirectory(prefix="punto-ui-") as temp:
         assigned = saved_key()
         assert assigned.startswith("Ctrl+Super+F"), assigned
         wait_saved(assigned)
-        key(assigned.replace("Ctrl", "ctrl").replace("Super", "super"))
+        # xdotool's Super alias differs with Ubuntu 26 keymaps; press physical modifier keycodes.
+        symbols = [0xffe3, 0xffeb, 0xffbd + int(assigned.rsplit('F', 1)[1])]
+        for symbol in symbols:
+            xtest.XTestFakeKeyEvent(display, xlib.XKeysymToKeycode(display, symbol), True, 0)
+        for symbol in reversed(symbols):
+            xtest.XTestFakeKeyEvent(display, xlib.XKeysymToKeycode(display, symbol), False, 0)
+        xlib.XFlush(display)
+        pump()
         deadline = time.monotonic() + 5
         while 'automatic = false' not in config_file.read_text():
-            assert time.monotonic() < deadline, "Suggested global shortcut did not activate"
+            assert time.monotonic() < deadline, ("Suggested global shortcut did not activate", assigned, call("org.punto.Switcher", "/org/punto/Switcher", "org.punto.Switcher", "Status"), config_file.read_text())
             time.sleep(0.1)
         def clear_part(x):
             click(x, 153)
