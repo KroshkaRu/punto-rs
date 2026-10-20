@@ -3,7 +3,7 @@
   <name>org.freedesktop.IBus.Punto</name>
   <description>Russian and English automatic layout switcher</description>
   <exec>@BINARY@ --ibus</exec>
-  <version>0.2.4</version>
+  <version>0.3.0</version>
   <license>MIT</license>
   <author>Punto RS contributors</author>
   <engines>

@@ -29,6 +29,11 @@ struct Settings {
     ignored_input: String,
     scratch: String,
     dictionaries: Result<Dictionaries, String>,
+    hotkey_parts: Vec<[String; 3]>,
+    saved_hotkeys: Vec<punto_rs::config::Binding>,
+    system_conflicts: Vec<punto_rs::shortcuts::SystemBinding>,
+    shortcut_notes: Vec<String>,
+    transfer_hotkey: Option<usize>,
     last_status: std::time::Instant,
     setup_result: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
 }
@@ -51,6 +56,19 @@ impl Settings {
             english_input: config.english_words.join("\n"),
             russian_input: config.russian_words.join("\n"),
             ignored_input: config.ignored_words.join("\n"),
+            hotkey_parts: config
+                .hotkeys
+                .iter()
+                .map(|b| {
+                    punto_rs::hotkey::Hotkey::parse(&b.keys)
+                        .map(|k| k.parts())
+                        .unwrap_or_default()
+                })
+                .collect(),
+            saved_hotkeys: config.hotkeys.clone(),
+            system_conflicts: vec![],
+            shortcut_notes: vec![],
+            transfer_hotkey: None,
             config,
             path,
             autostart,
@@ -74,10 +92,11 @@ impl Settings {
         let dictionaries = Dictionaries::load(&config)?;
         config.save(&self.path)?;
         autostart::set_enabled(&autostart::path(), self.autostart)?;
+        self.saved_hotkeys = config.hotkeys.clone();
         self.config = config;
         self.dictionaries = Ok(dictionaries);
         if let Ok(connection) = zbus::blocking::connection::Builder::session()?
-            .method_timeout(Duration::from_millis(700))
+            .method_timeout(Duration::from_secs(5))
             .build()
             && zbus::blocking::fdo::DBusProxy::new(&connection)?
                 .name_has_owner("org.punto.Switcher".try_into()?)?
@@ -165,7 +184,24 @@ impl Settings {
             });
             ui.label("IBus используется только по вашему выбору. Кнопка выбирает движок в уже запущенном IBus; службы и системные настройки не меняются.");
         } else {
-            ui.label("Нативный режим использует AT-SPI: нужны доступные Text и EditableText. Защищённые и недоступные поля пропускаются. В X11 горячие клавиши работают через XKB, обычное переключение языков сохраняется.");
+            ui.label("Нативный режим использует AT-SPI. В X11 поля без EditableText редактируются через клавиатуру с проверкой текста и фокуса. Защищённые и недоступные поля пропускаются.");
+        }
+        let (source, target) = punto_rs::electron::paths();
+        if source.exists() || punto_rs::electron::installed(&target) {
+            let enabled = punto_rs::electron::installed(&target);
+            if ui
+                .button(if enabled {
+                    "Отключить поддержку Perplexity"
+                } else {
+                    "Включить поддержку Perplexity"
+                })
+                .clicked()
+            {
+                self.message = match if enabled { punto_rs::electron::restore(&target) } else { punto_rs::electron::enable(&source, &target) } {
+                    Ok(()) => "Ярлык обновлён. Полностью закройте Perplexity и запустите через меню приложений.".into(),
+                    Err(e) => format!("Ошибка: {e:#}"),
+                };
+            }
         }
         ui.separator();
         ui.label("Проверка автопереключения: руддщ + пробел = hello");
@@ -216,7 +252,7 @@ impl Settings {
     }
     fn hotkeys(&mut self, ui: &mut egui::Ui) {
         ui.heading("Горячие клавиши");
-        ui.label("Формат: Ctrl+Alt+S, Pause, ScrollLock, Shift+F12. В X11 сочетания глобальные; занятые системой не перехватываются. В IBus действуют в поле ввода выбранного источника Punto RS.");
+        ui.label("Выберите модификаторы и клавишу. Любой список можно оставить пустым. Изменения применяются после сохранения.");
         if std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("wayland")
             && self.config.backend != Backend::Ibus
         {
@@ -231,26 +267,226 @@ impl Settings {
                 };
             }
         }
-        egui::Grid::new("hotkeys")
-            .spacing([24., 10.])
-            .show(ui, |ui| {
-                for binding in &mut self.config.hotkeys {
+        let mut edited = None;
+        let mut suggest = None;
+        for (index, binding) in self.config.hotkeys.iter_mut().enumerate() {
+            ui.push_id(binding.action.id(), |ui| {
+                ui.group(|ui| {
+                    ui.label(binding.action.label());
+                    let parts = &mut self.hotkey_parts[index];
+                    let original = parts.clone();
                     ui.horizontal(|ui| {
-                        let icon = if binding.action == punto_rs::config::Action::Undo {
-                            &self.icons.undo
-                        } else {
-                            &self.icons.keyboard
-                        };
-                        ui.add(
-                            egui::Image::new((icon.id(), egui::vec2(18., 18.)))
-                                .tint(ui.visuals().text_color()),
-                        );
-                        ui.label(binding.action.label());
+                        for (slot, part) in parts.iter_mut().enumerate() {
+                            egui::ComboBox::from_id_salt(slot)
+                                .width(155.)
+                                .selected_text(if part.is_empty() {
+                                    "(пусто)"
+                                } else {
+                                    part.as_str()
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(part, String::new(), "(пусто)");
+                                    for value in hotkey_choices(slot) {
+                                        ui.selectable_value(part, value.clone(), value);
+                                    }
+                                });
+                            if ui
+                                .add_sized([18., 18.], egui::Button::new("×"))
+                                .on_hover_text("Очистить поле")
+                                .clicked()
+                            {
+                                part.clear();
+                            }
+                        }
+                        if ui.button("Подобрать").clicked() {
+                            suggest = Some(index);
+                        }
                     });
-                    ui.text_edit_singleline(&mut binding.keys);
-                    ui.end_row();
-                }
+                    if original != *parts {
+                        binding.keys = if parts[2].is_empty() {
+                            String::new()
+                        } else {
+                            parts
+                                .iter()
+                                .filter(|s| !s.is_empty())
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("+")
+                        };
+                        edited = Some(index);
+                    }
+                });
             });
+        }
+        if let Some(index) = suggest {
+            let result = self.suggest_hotkey(index);
+            self.message = match result {
+                Ok(()) => "Свободное сочетание выбрано; нажмите Сохранить".into(),
+                Err(error) => error.to_string(),
+            };
+            edited = Some(index);
+        }
+        if let Some(index) = edited {
+            self.transfer_hotkey = Some(index);
+            self.check_hotkeys();
+        }
+        if let Some(index) = self.transfer_hotkey {
+            let key = punto_rs::hotkey::Hotkey::parse(&self.config.hotkeys[index].keys).ok();
+            if key.is_some()
+                && self
+                    .config
+                    .hotkeys
+                    .iter()
+                    .enumerate()
+                    .any(|(other, binding)| {
+                        other != index && punto_rs::hotkey::Hotkey::parse(&binding.keys).ok() == key
+                    })
+            {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    "Это сочетание уже назначено другому действию Punto.",
+                );
+                if ui
+                    .button("Передать сочетание выбранному действию")
+                    .clicked()
+                {
+                    for (other, binding) in self.config.hotkeys.iter_mut().enumerate() {
+                        if other != index
+                            && punto_rs::hotkey::Hotkey::parse(&binding.keys).ok() == key
+                        {
+                            binding.keys.clear();
+                        }
+                    }
+                    self.transfer_hotkey = None;
+                    self.sync_hotkey_parts();
+                }
+            }
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Проверить конфликты").clicked() {
+                self.check_hotkeys();
+            }
+            if ui
+                .add(egui::Button::image_and_text(
+                    egui::Image::new((self.icons.undo.id(), egui::vec2(18., 18.))),
+                    "Отменить изменения сочетаний",
+                ))
+                .clicked()
+            {
+                self.config.hotkeys = self.saved_hotkeys.clone();
+                self.sync_hotkey_parts();
+                self.check_hotkeys();
+            }
+        });
+        for note in &self.shortcut_notes {
+            ui.label(note);
+        }
+        let backup = self.path.with_file_name("hotkeys-backup.toml");
+        if !self.system_conflicts.is_empty()
+            && ui
+                .button("Отключить перечисленные конфликты в системе")
+                .clicked()
+        {
+            self.message = match punto_rs::shortcuts::release(&backup, &self.system_conflicts) {
+                Ok(()) => {
+                    "Системные привязки отключены с резервной копией. Сохраните настройки Punto."
+                        .into()
+                }
+                Err(error) => error.to_string(),
+            };
+            self.check_hotkeys();
+        }
+        if backup.exists()
+            && ui
+                .button("Восстановить системные сочетания из резервной копии")
+                .clicked()
+        {
+            self.message = match restart_daemon(Some(&backup)) {
+                Ok(()) => "Системные сочетания восстановлены".into(),
+                Err(error) => error.to_string(),
+            };
+            self.check_hotkeys();
+        }
+        ui.label("Пустая третья клавиша отключает действие. Неизвестные захваты других приложений принудительно не отбираются.");
+    }
+    fn sync_hotkey_parts(&mut self) {
+        self.hotkey_parts = self
+            .config
+            .hotkeys
+            .iter()
+            .map(|b| {
+                punto_rs::hotkey::Hotkey::parse(&b.keys)
+                    .map(|k| k.parts())
+                    .unwrap_or_default()
+            })
+            .collect();
+    }
+    fn check_hotkeys(&mut self) {
+        self.system_conflicts.clear();
+        self.shortcut_notes.clear();
+        let system = punto_rs::shortcuts::scan();
+        for binding in &self.config.hotkeys {
+            let Ok(key) = punto_rs::hotkey::Hotkey::parse(&binding.keys) else {
+                continue;
+            };
+            for entry in system.iter().filter(|entry| entry.matches(key)) {
+                self.shortcut_notes.push(format!(
+                    "{}: {} / {}",
+                    binding.keys, entry.schema, entry.key
+                ));
+                if !self
+                    .system_conflicts
+                    .iter()
+                    .any(|old| old.schema == entry.schema && old.key == entry.key)
+                {
+                    self.system_conflicts.push(entry.clone());
+                }
+            }
+            match hotkey_available(&binding.keys) {
+                Ok(false) => self.shortcut_notes.push(format!(
+                    "{}: занято другим приложением или недоступно",
+                    binding.keys
+                )),
+                Err(error) => {
+                    self.shortcut_notes.push(format!(
+                        "Проверка недоступна: {error}. Перезапустите фоновый процесс."
+                    ));
+                    break;
+                }
+                Ok(true) => {}
+            }
+        }
+        if self.shortcut_notes.is_empty() {
+            self.shortcut_notes.push("Конфликтов не найдено".into());
+        }
+    }
+    fn suggest_hotkey(&mut self, index: usize) -> anyhow::Result<()> {
+        let system = punto_rs::shortcuts::scan();
+        for prefix in ["Ctrl+Super", "Alt+Super"] {
+            for number in 1..=24 {
+                let text = format!("{prefix}+F{number}");
+                let key = punto_rs::hotkey::Hotkey::parse(&text)?;
+                if self
+                    .config
+                    .hotkeys
+                    .iter()
+                    .enumerate()
+                    .any(|(other, binding)| {
+                        other != index
+                            && punto_rs::hotkey::Hotkey::parse(&binding.keys).ok() == Some(key)
+                    })
+                    || system.iter().any(|entry| entry.matches(key))
+                {
+                    continue;
+                }
+                if hotkey_available(&text)? {
+                    self.config.hotkeys[index].keys = text;
+                    self.sync_hotkey_parts();
+                    return Ok(());
+                }
+            }
+        }
+        anyhow::bail!("Свободное сочетание не найдено")
     }
     fn exceptions(&mut self, ui: &mut egui::Ui) {
         ui.heading("Правила для приложений");
@@ -346,10 +582,27 @@ impl eframe::App for Settings {
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.image((self.icons.app.id(), egui::vec2(26., 26.)));
-                ui.heading("Punto RS");
+                ui.heading(format!("Punto RS {}", env!("CARGO_PKG_VERSION")));
                 ui.label("Русский ↔ English");
             });
             ui.label(&self.status);
+            if ui
+                .add_enabled(
+                    self.setup_result.is_none(),
+                    egui::Button::new("Перезапустить фоновый процесс"),
+                )
+                .clicked()
+            {
+                let (send, receive) = std::sync::mpsc::channel();
+                self.setup_result = Some(receive);
+                std::thread::spawn(move || {
+                    let _ = send.send(
+                        restart_daemon(None)
+                            .map(|()| "Фоновый процесс перезапущен".into())
+                            .map_err(|e| e.to_string()),
+                    );
+                });
+            }
         });
         egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -471,8 +724,12 @@ fn status() -> Option<String> {
     let (layout, auto, app, message): (String, bool, String, String) =
         proxy.call("Status", &()).ok()?;
     let backend: String = proxy.call("InputBackend", &()).unwrap_or_default();
+    let runtime = proxy
+        .call::<_, _, (String, u32)>("RuntimeInfo", &())
+        .map(|(v, p)| format!("Фон {v}, PID {p}"))
+        .unwrap_or_else(|_| "Старый фоновый процесс — перезапустите его".into());
     Some(format!(
-        "{backend} · {layout} · {} · {app}  {message}",
+        "{runtime} · {backend} · {layout} · {} · {app}  {message}",
         if auto { "Авто" } else { "Вручную" }
     ))
 }
@@ -498,6 +755,8 @@ pub fn run(path: PathBuf) -> anyhow::Result<()> {
                 context: context.clone(),
             },
         )?
+        .allow_name_replacements(false)
+        .replace_existing_names(false)
         .name("org.punto.Switcher.Settings")?
         .build();
     let _control = match control {
@@ -519,8 +778,8 @@ pub fn run(path: PathBuf) -> anyhow::Result<()> {
             .with_title("Punto RS — настройки")
             .with_app_id("punto-rs")
             .with_icon(crate::icons::app_icon())
-            .with_inner_size([900., 650.])
-            .with_min_inner_size([700., 500.]),
+            .with_inner_size([1100., 760.])
+            .with_min_inner_size([900., 650.]),
         ..Default::default()
     };
     eframe::run_native(
@@ -532,6 +791,90 @@ pub fn run(path: PathBuf) -> anyhow::Result<()> {
         }),
     )
     .map_err(|e| anyhow::anyhow!("Окно настроек: {e}"))
+}
+
+fn hotkey_choices(slot: usize) -> Vec<String> {
+    if slot < 2 {
+        return (1u8..=15)
+            .filter(|mask| slot == 0 || mask.count_ones() == 1)
+            .map(|mask| {
+                ["Ctrl", "Alt", "Shift", "Super"]
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| mask & (1 << i) != 0)
+                    .map(|(_, name)| *name)
+                    .collect::<Vec<_>>()
+                    .join("+")
+            })
+            .collect();
+    }
+    [
+        "Space",
+        "Backspace",
+        "Tab",
+        "Enter",
+        "Escape",
+        "Pause",
+        "ScrollLock",
+        "Delete",
+        "Insert",
+        "Home",
+        "End",
+        "Left",
+        "Up",
+        "Right",
+        "Down",
+        "PageUp",
+        "PageDown",
+        "Print",
+        "Menu",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .chain(('A'..='Z').chain('0'..='9').map(|c| c.to_string()))
+    .chain((1..=24).map(|n| format!("F{n}")))
+    .collect()
+}
+fn hotkey_available(keys: &str) -> anyhow::Result<bool> {
+    let connection = zbus::blocking::connection::Builder::session()?
+        .method_timeout(Duration::from_secs(1))
+        .build()?;
+    Ok(zbus::blocking::Proxy::new(
+        &connection,
+        "org.punto.Switcher",
+        "/org/punto/Switcher",
+        "org.punto.Switcher",
+    )?
+    .call("HotkeyAvailable", &(keys,))?)
+}
+fn restart_daemon(restore: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let connection = zbus::blocking::connection::Builder::session()?
+        .method_timeout(Duration::from_secs(1))
+        .build()?;
+    if punto_rs::service::running() {
+        let _: () = zbus::blocking::Proxy::new(
+            &connection,
+            "org.punto.Switcher",
+            "/org/punto/Switcher",
+            "org.punto.Switcher",
+        )?
+        .call("Quit", &())?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while punto_rs::service::running() {
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "Фоновый процесс не завершился"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    // Release Punto's grabs before the desktop restores its own bindings.
+    let restored = restore.map(punto_rs::shortcuts::restore).transpose();
+    std::process::Command::new(std::env::current_exe()?)
+        .arg("--daemon")
+        .spawn()?;
+    restored?;
+    Ok(())
 }
 
 fn connect_shortcuts() -> anyhow::Result<()> {

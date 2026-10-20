@@ -43,7 +43,21 @@ impl Target {
             .cache_properties(CacheProperties::No)
             .build()?)
     }
+    fn own_settings(&self, connection: &Connection) -> bool {
+        // Settings has its own preview engine; do not edit it twice or call back into its UI thread.
+        let pid = zbus::blocking::fdo::DBusProxy::new(connection)
+            .ok()
+            .and_then(|bus| {
+                bus.get_connection_unix_process_id(self.0.name.clone().into())
+                    .ok()
+            });
+        pid.and_then(|pid| std::fs::read_link(format!("/proc/{pid}/exe")).ok())
+            .is_some_and(|exe| exe.file_name().is_some_and(|name| name == "punto-rs"))
+    }
     fn safe(&self, connection: &Connection) -> Result<bool> {
+        if self.own_settings(connection) {
+            return Ok(false);
+        }
         let accessible = self.accessible(connection)?;
         if accessible.get_role()? == Role::PasswordText {
             return Ok(false);
@@ -52,9 +66,7 @@ impl Target {
         Ok(states.contains(State::Focused)
             && states.contains(State::Editable)
             && !states.contains(State::Defunct)
-            && accessible
-                .get_interfaces()?
-                .contains(Interface::EditableText))
+            && accessible.get_interfaces()?.contains(Interface::Text))
     }
     fn snapshot(&self, connection: &Connection) -> Result<Surrounding> {
         ensure!(
@@ -72,6 +84,14 @@ impl Target {
         // atspi-proxies 0.9 generates GetNselections with the wrong capital S.
         let selections: i32 = text.inner().call("GetNSelections", &())?;
         let anchor = if selections == 1 {
+            // shortcut: Chromium reports wrong selection offsets after non-BMP text; refuse until its ATK API is fixed.
+            ensure!(
+                self.accessible(connection)?
+                    .get_interfaces()?
+                    .contains(Interface::EditableText)
+                    || !value.chars().any(|ch| ch as u32 > 0xffff),
+                "Нельзя достоверно прочитать выделение Chromium после символов вне BMP"
+            );
             let (start, end) = text.get_selection(0)?;
             if cursor == start as usize {
                 end as usize
@@ -109,6 +129,7 @@ pub struct Native {
     events: Receiver<zbus::Message>,
     target: Option<Target>,
     undo: Option<Undo>,
+    last_edit: Option<(Target, Surrounding)>,
     keyboard: Option<Keyboard>,
     last_keyboard: Instant,
     portal: Option<crate::portal::Portal>,
@@ -205,6 +226,7 @@ impl Native {
             events,
             target: None,
             undo: None,
+            last_edit: None,
             keyboard,
             last_keyboard: Instant::now() - Duration::from_secs(1),
             portal: None,
@@ -224,9 +246,21 @@ impl Native {
             self.last_keyboard = Instant::now();
             if let Some(keyboard) = &mut self.keyboard {
                 let mut state = shared.lock().unwrap();
+                if std::mem::take(&mut state.rebind_hotkeys) {
+                    keyboard.rebind();
+                }
                 let failures = keyboard.bind(&state.config)?;
+                state.active_hotkeys = state
+                    .config
+                    .hotkeys
+                    .iter()
+                    .filter(|binding| !binding.keys.is_empty() && !failures.contains(&binding.keys))
+                    .map(|binding| binding.keys.clone())
+                    .collect();
                 if !failures.is_empty() {
                     state.message = format!("Сочетания заняты: {}", failures.join(", "));
+                } else if state.message.starts_with("Сочетания заняты:") {
+                    state.message.clear();
                 }
                 if keyboard
                     .reported
@@ -287,6 +321,15 @@ impl Native {
         Ok(())
     }
     fn focus(&mut self, target: Target, shared: &Shared) -> Result<()> {
+        if target.own_settings(&self.connection) {
+            let mut state = shared.lock().unwrap();
+            state.focused = false;
+            state.engine.capabilities = 0;
+            state.message = "В настройках работает встроенная проверка".into();
+            self.target = None;
+            self.undo = None;
+            return Ok(());
+        }
         if self.target.as_ref() == Some(&target) {
             let safe = target.safe(&self.connection).unwrap_or(false);
             let mut state = shared.lock().unwrap();
@@ -295,6 +338,7 @@ impl Native {
             return Ok(());
         }
         self.undo = None;
+        self.last_edit = None;
         let safe = target.safe(&self.connection).unwrap_or(false);
         let app_ref = target.accessible(&self.connection)?.get_application()?;
         let app = Target(app_ref).accessible(&self.connection)?.name()?;
@@ -338,6 +382,14 @@ impl Native {
             return Ok(());
         }
         if let Ok(event) = TextCaretMovedEvent::try_from(message) {
+            if self.last_edit.as_ref().is_some_and(|(target, expected)| {
+                target.0 == event.item
+                    && target
+                        .snapshot(&self.connection)
+                        .is_ok_and(|actual| actual == *expected)
+            }) {
+                return Ok(());
+            }
             if self.undo.as_ref().is_some_and(|undo| {
                 undo.target.0 == event.item
                     && serial_after(
@@ -376,6 +428,15 @@ impl Native {
         }
         self.focus(target.clone(), shared)?;
         let before = target.snapshot(&self.connection)?;
+        // Electron publishes our synthetic insertions asynchronously, including the space restored by Undo.
+        if self
+            .last_edit
+            .as_ref()
+            .is_some_and(|(edited, expected)| *edited == target && *expected == before)
+        {
+            return Ok(());
+        }
+        self.last_edit = None;
         if self
             .undo
             .as_ref()
@@ -413,8 +474,14 @@ impl Native {
         let tail: String = original.chars().rev().take(1).collect();
         let replacement = correction.text + &tail;
         if replacement != original {
-            let (expected, event_serial) =
-                self.replace(&target, &before, start, before.cursor, &replacement)?;
+            let (expected, event_serial) = self.replace(
+                &target,
+                &before,
+                start..before.cursor,
+                &replacement,
+                correction.layout,
+            )?;
+            self.last_edit = Some((target.clone(), expected.clone()));
             self.undo = Some(Undo {
                 event_serial,
                 target,
@@ -424,7 +491,7 @@ impl Native {
                 original,
                 layout,
             });
-            self.set_layout(correction.layout, shared)?;
+            self.finish_replacement(correction.layout, shared)?;
             if shared.lock().unwrap().config.sound {
                 crate::service::play_sound(shared.clone());
             }
@@ -435,10 +502,11 @@ impl Native {
         &self,
         target: &Target,
         before: &Surrounding,
-        start: usize,
-        end: usize,
+        range: std::ops::Range<usize>,
         replacement: &str,
+        final_layout: Layout,
     ) -> Result<(Surrounding, u32)> {
+        let (start, end) = (range.start, range.end);
         ensure!(
             start <= end && end <= before.text.chars().count(),
             "Некорректный диапазон замены"
@@ -447,6 +515,13 @@ impl Native {
             target.snapshot(&self.connection)? == *before,
             "Текст или курсор изменились; преобразование отменено"
         );
+        if !target
+            .accessible(&self.connection)?
+            .get_interfaces()?
+            .contains(Interface::EditableText)
+        {
+            return self.replace_keyboard(target, before, start..end, replacement, final_layout);
+        }
         let edit = EditableTextProxyBlocking::builder(&self.connection)
             .destination(target.0.name.as_str())?
             .path(target.0.path.as_str())?
@@ -463,28 +538,203 @@ impl Native {
             actual.text == inserted,
             "Приложение изменило текст при вставке; исходный фрагмент сохранён"
         );
+        if let Some(keyboard) = &self.keyboard {
+            keyboard.switch(final_layout)?;
+        }
         ensure!(
             edit.delete_text((start + length) as i32, (end + length) as i32)?,
             "Приложение отклонило удаление; исходный фрагмент сохранён"
-        );
-        let reply = target
-            .text(&self.connection)?
-            .inner()
-            .call_method("SetCaretOffset", &((start + length) as i32,))?;
-        ensure!(
-            reply.body().deserialize::<bool>()?,
-            "Не удалось восстановить курсор"
         );
         let expected = Surrounding {
             text: splice(&before.text, start, end, replacement),
             cursor: start + length,
             anchor: start + length,
         };
+        let current = target.snapshot(&self.connection)?;
         ensure!(
-            target.snapshot(&self.connection)?.text == expected.text,
-            "Приложение не подтвердило замену"
+            current.text == expected.text,
+            "Текст изменился после замены; курсор не перемещён"
         );
+        let text = target.text(&self.connection)?;
+        let reply = if current.cursor == expected.cursor && current.anchor == expected.anchor {
+            text.inner().call_method("GetNSelections", &())?
+        } else {
+            let reply = text
+                .inner()
+                .call_method("SetCaretOffset", &(expected.cursor as i32,))?;
+            ensure!(
+                reply.body().deserialize::<bool>()?,
+                "Не удалось восстановить курсор"
+            );
+            reply
+        };
         Ok((expected, reply.primary_header().serial_num().get()))
+    }
+    fn replace_keyboard(
+        &self,
+        target: &Target,
+        before: &Surrounding,
+        range: std::ops::Range<usize>,
+        replacement: &str,
+        final_layout: Layout,
+    ) -> Result<(Surrounding, u32)> {
+        let (start, end) = (range.start, range.end);
+        let keyboard = self
+            .keyboard
+            .as_ref()
+            .context("Поле без EditableText требует X11; на Wayland используйте IBus")?;
+        let plan = keyboard.typing_plan(replacement)?;
+        let original: String = before.text.chars().skip(start).take(end - start).collect();
+        // Restrict backspacing to mapped characters, excluding combining/control sequences.
+        keyboard.typing_plan(&original)?;
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while let Err(error) = keyboard.idle() {
+            if Instant::now() >= deadline {
+                return Err(error);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        ensure!(
+            target.snapshot(&self.connection)? == *before,
+            "Текст изменился до начала клавиатурной замены"
+        );
+        let focus = keyboard.input_focus()?;
+        let old_layout = keyboard.layout()?.context("Неизвестна текущая раскладка")?;
+        let text = target.text(&self.connection)?;
+        ensure!(
+            text.inner()
+                .call::<_, _, bool>("SetCaretOffset", &(start as i32,))?,
+            "Приложение отклонило перемещение курсора"
+        );
+        let result = (|| -> Result<(Surrounding, u32)> {
+            let deadline = Instant::now() + Duration::from_millis(500);
+            loop {
+                let snapshot = target.snapshot(&self.connection)?;
+                ensure!(
+                    snapshot.text == before.text,
+                    "Текст изменился при перемещении курсора"
+                );
+                if snapshot.cursor == start && snapshot.anchor == start {
+                    break;
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "Приложение не подтвердило положение курсора"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let mut inserted = String::new();
+            for ((layout, code, shift), ch) in plan.into_iter().zip(replacement.chars()) {
+                ensure!(
+                    keyboard.input_focus()? == focus && target.safe(&self.connection)?,
+                    "Фокус изменился; замена остановлена"
+                );
+                keyboard.idle()?;
+                keyboard.switch(layout)?;
+                keyboard.type_key(code, shift)?;
+                inserted.push(ch);
+                self.wait_text(target, &splice(&before.text, start, start, &inserted))?;
+            }
+            let length = replacement.chars().count();
+            ensure!(
+                keyboard.input_focus()? == focus,
+                "Фокус изменился; исходный текст сохранён"
+            );
+            let snapshot = target.snapshot(&self.connection)?;
+            ensure!(
+                snapshot.text == splice(&before.text, start, start, replacement),
+                "Текст изменился; исходный фрагмент сохранён"
+            );
+            ensure!(
+                text.inner()
+                    .call::<_, _, bool>("SetCaretOffset", &((end + length) as i32,))?,
+                "Приложение отклонило перемещение курсора"
+            );
+            let deadline = Instant::now() + Duration::from_millis(500);
+            loop {
+                let current = target.snapshot(&self.connection)?;
+                ensure!(
+                    current.text == snapshot.text,
+                    "Текст изменился перед удалением"
+                );
+                if current.cursor == end + length && current.anchor == current.cursor {
+                    break;
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "Приложение не подтвердило положение курсора"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            keyboard.switch(final_layout)?;
+            for remaining in (start..end).rev() {
+                ensure!(
+                    keyboard.input_focus()? == focus && target.safe(&self.connection)?,
+                    "Фокус изменился; удаление остановлено"
+                );
+                keyboard.idle()?;
+                let current = target.snapshot(&self.connection)?;
+                ensure!(
+                    current.cursor == remaining + length + 1
+                        && current.anchor == current.cursor
+                        && current.text
+                            == splice(
+                                &splice(&before.text, remaining + 1, end, ""),
+                                start,
+                                start,
+                                replacement
+                            ),
+                    "Текст или курсор изменились; удаление остановлено"
+                );
+                keyboard.backspace()?;
+                self.wait_text(
+                    target,
+                    &splice(
+                        &splice(&before.text, remaining, end, ""),
+                        start,
+                        start,
+                        replacement,
+                    ),
+                )?;
+            }
+            let expected = Surrounding {
+                text: splice(&before.text, start, end, replacement),
+                cursor: start + length,
+                anchor: start + length,
+            };
+            self.wait_text(target, &expected.text)?;
+            // Backspace already leaves the caret here; moving it again can reorder new physical input.
+            let reply = text.inner().call_method("GetNSelections", &())?;
+            Ok((expected, reply.primary_header().serial_num().get()))
+        })();
+        if result.is_err() && keyboard.input_focus()? == focus {
+            keyboard.switch(old_layout)?;
+        }
+        result
+    }
+    fn wait_text(&self, target: &Target, expected: &str) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            if target.snapshot(&self.connection)?.text == expected {
+                return Ok(());
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "Приложение не подтвердило ввод; исходный фрагмент сохранён"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    fn finish_replacement(&mut self, layout: Layout, shared: &Shared) -> Result<()> {
+        if let Some(keyboard) = &mut self.keyboard {
+            // X11 selected the final group before deletion; preserve a newer physical Ctrl+Shift.
+            let actual = keyboard.layout()?.unwrap_or(layout);
+            keyboard.reported = Some(actual);
+            shared.lock().unwrap().engine.layout = actual;
+            Ok(())
+        } else {
+            self.set_layout(layout, shared)
+        }
     }
     fn set_layout(&mut self, layout: Layout, shared: &Shared) -> Result<()> {
         if let Some(keyboard) = &mut self.keyboard {
@@ -531,14 +781,15 @@ impl Native {
                 undo.target == target && undo.expected == before,
                 "Текст или курсор изменились; откат отменён"
             );
-            self.replace(
+            let (expected, _) = self.replace(
                 &target,
                 &before,
-                undo.start,
-                undo.start + undo.replacement_len,
+                undo.start..undo.start + undo.replacement_len,
                 &undo.original,
+                undo.layout,
             )?;
-            return self.set_layout(undo.layout, shared);
+            self.last_edit = Some((target.clone(), expected));
+            return self.finish_replacement(undo.layout, shared);
         }
         let (start, end) = if before.cursor != before.anchor {
             (
@@ -570,7 +821,14 @@ impl Native {
             return Ok(());
         }
         let layout = shared.lock().unwrap().engine.layout;
-        let (expected, event_serial) = self.replace(&target, &before, start, end, &replacement)?;
+        let final_layout = if matches!(action, Action::ConvertSelection | Action::ConvertWord) {
+            word_layout(&replacement, layout)
+        } else {
+            layout
+        };
+        let (expected, event_serial) =
+            self.replace(&target, &before, start..end, &replacement, final_layout)?;
+        self.last_edit = Some((target.clone(), expected.clone()));
         self.undo = Some(Undo {
             event_serial,
             target: target.clone(),
@@ -581,7 +839,7 @@ impl Native {
             layout,
         });
         if matches!(action, Action::ConvertSelection | Action::ConvertWord) {
-            self.set_layout(word_layout(&replacement, layout), shared)?;
+            self.finish_replacement(final_layout, shared)?;
         }
         Ok(())
     }

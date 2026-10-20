@@ -12,4 +12,7 @@ pub mod portal;
 pub mod service;
 pub mod session_layout;
 pub mod setup;
+pub mod shortcuts;
 pub mod x11;
+
+pub mod electron;

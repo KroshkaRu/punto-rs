@@ -148,6 +148,7 @@ fn shortcuts(config: &Config) -> Result<Vec<(String, Dict)>> {
     config
         .hotkeys
         .iter()
+        .filter(|binding| !binding.keys.is_empty())
         .map(|binding| {
             Ok((
                 binding.action.id().into(),

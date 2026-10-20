@@ -35,6 +35,8 @@ pub struct State {
     pub backend: String,
     pub actions: std::collections::VecDeque<crate::config::Action>,
     pub connect_shortcuts: bool,
+    pub active_hotkeys: Vec<String>,
+    pub rebind_hotkeys: bool,
 }
 
 impl State {
@@ -54,6 +56,8 @@ impl State {
             backend: String::new(),
             actions: std::collections::VecDeque::new(),
             connect_shortcuts: false,
+            active_hotkeys: vec![],
+            rebind_hotkeys: false,
         }
     }
 }
@@ -378,6 +382,39 @@ pub struct Control {
 
 #[interface(name = "org.punto.Switcher")]
 impl Control {
+    fn runtime_info(&self) -> (String, u32) {
+        (env!("CARGO_PKG_VERSION").into(), std::process::id())
+    }
+    fn hotkey_available(&self, keys: &str) -> zbus::fdo::Result<bool> {
+        let key = crate::hotkey::Hotkey::parse(keys)
+            .map_err(|e| zbus::fdo::Error::InvalidArgs(e.to_string()))?;
+        if self
+            .shared
+            .lock()
+            .unwrap()
+            .active_hotkeys
+            .iter()
+            .any(|text| crate::hotkey::Hotkey::parse(text).ok() == Some(key))
+        {
+            return Ok(true);
+        }
+        if std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("wayland") {
+            return Err(zbus::fdo::Error::NotSupported(
+                "На Wayland занятость определяет портал".into(),
+            ));
+        }
+        let config = Config {
+            hotkeys: vec![crate::config::Binding {
+                action: crate::config::Action::SwitchLayout,
+                keys: keys.into(),
+            }],
+            ..Config::default()
+        };
+        crate::x11::Keyboard::new()
+            .and_then(|mut keyboard| keyboard.bind(&config))
+            .map(|failures| failures.is_empty())
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+    }
     fn set_layout(&self, language: &str) -> zbus::fdo::Result<()> {
         let layout = match language {
             "EN" => crate::layout::Layout::En,
@@ -451,6 +488,7 @@ impl Control {
             Dictionaries::load(&config).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
         let mut state = self.shared.lock().unwrap();
         state.config = config;
+        state.rebind_hotkeys = true;
         state.dictionaries = Arc::new(dictionaries);
         let focus = state.engine.focus.clone();
         let app = state.engine.app.clone();
@@ -503,7 +541,7 @@ pub fn connect_ibus(shared: Shared) -> Result<zbus::blocking::Connection> {
             shared: shared.clone(),
         },
     )?;
-    connection.request_name(NAME)?;
+    connection.request_name_with_flags(NAME, zbus::fdo::RequestNameFlags::DoNotQueue.into())?;
     shared.lock().unwrap().connected = true;
     Ok(connection)
 }
@@ -511,23 +549,22 @@ pub fn connect_ibus(shared: Shared) -> Result<zbus::blocking::Connection> {
 pub fn control_connection(control: Control) -> Result<zbus::blocking::Connection> {
     Ok(zbus::blocking::connection::Builder::session()?
         .serve_at("/org/punto/Switcher", control)?
+        .allow_name_replacements(false)
+        .replace_existing_names(false)
         .name("org.punto.Switcher")?
         .build()?)
 }
 
-pub fn open_existing() -> bool {
-    let Ok(connection) = zbus::blocking::Connection::session() else {
-        return false;
-    };
-    let Ok(proxy) = zbus::blocking::Proxy::new(
-        &connection,
-        "org.punto.Switcher",
-        "/org/punto/Switcher",
-        "org.punto.Switcher",
-    ) else {
-        return false;
-    };
-    proxy.call::<_, _, ()>("ShowSettings", &()).is_ok()
+pub fn running() -> bool {
+    zbus::blocking::Connection::session()
+        .ok()
+        .and_then(|connection| {
+            zbus::blocking::fdo::DBusProxy::new(&connection)
+                .ok()?
+                .name_has_owner("org.punto.Switcher".try_into().ok()?)
+                .ok()
+        })
+        .unwrap_or(false)
 }
 
 pub(crate) fn play_sound(shared: Shared) {

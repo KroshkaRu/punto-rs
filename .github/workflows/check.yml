@@ -15,6 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: apt-get update && apt-get install -y build-essential curl pkg-config ca-certificates at-spi2-core x11-xkb-utils ibus ibus-gtk3 python3-gi gir1.2-ibus-1.0 gir1.2-gtk-3.0 hunspell-ru hunspell-en-us dbus-x11 xvfb xauth xdotool libegl1 libgl1 libxkbcommon-x11-0 libxi6 libxrandr2 libxcursor1 libxinerama1
+      - if: matrix.ubuntu == '24.04'
+        run: apt-get install -y libglib2.0-bin mate-settings-daemon marco gnome-text-editor unzip libnss3 libatk-bridge2.0-0 libasound2t64
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -29,6 +31,22 @@ jobs:
       - run: PUNTO_TEST_DRIVER=kde xvfb-run -a dbus-run-session -- python3 tests/native_integration.py target/debug/punto-rs
       - run: PUNTO_TEST_DRIVER=fcitx xvfb-run -a dbus-run-session -- python3 tests/native_integration.py target/debug/punto-rs
       - run: xvfb-run -a dbus-run-session -- python3 tests/ui_smoke.py target/debug/punto-rs /tmp/settings.png
+      - if: matrix.ubuntu == '24.04'
+        run: PUNTO_TEST_SHORTCUTS=1 dbus-run-session -- cargo test --lib release_and_restore_real_gsettings -- --ignored
+      - if: matrix.ubuntu == '24.04'
+        run: xvfb-run -a dbus-run-session -- bash tests/mate_integration.sh target/debug/punto-rs
+      - if: matrix.ubuntu == '24.04'
+        run: |
+          mkdir -p /tmp/electron-runtime
+          cd /tmp/electron-runtime
+          curl -fsSLO https://github.com/electron/electron/releases/download/v40.2.1/electron-v40.2.1-linux-x64.zip
+          curl -fsSLO https://github.com/electron/electron/releases/download/v40.2.1/SHASUMS256.txt
+          sha256sum --check --ignore-missing SHASUMS256.txt
+          unzip -q electron-v40.2.1-linux-x64.zip
+      - if: matrix.ubuntu == '24.04'
+        run: PUNTO_TEST_ELECTRON=/tmp/electron-runtime/electron xvfb-run -a dbus-run-session -- python3 tests/electron_integration.py target/debug/punto-rs
+      - if: matrix.ubuntu == '24.04'
+        run: PUNTO_TEST_RICH=1 PUNTO_TEST_ELECTRON=/tmp/electron-runtime/electron xvfb-run -a dbus-run-session -- python3 tests/electron_integration.py target/debug/punto-rs
       - if: matrix.ubuntu == '22.04'
         run: ./scripts/build-deb.sh --native
       - if: matrix.ubuntu == '22.04'

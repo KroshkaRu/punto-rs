@@ -62,13 +62,13 @@ fn run() -> Result<()> {
         Some("--ibus" | "--daemon") => daemon(path, args[0] == "--ibus")?,
         Some("--settings-window") => ui::run(path)?,
         None | Some("--settings") => {
-            if !service::open_existing() {
+            if !service::running() {
                 Command::new(std::env::current_exe()?)
                     .arg("--daemon")
                     .stdin(std::process::Stdio::null())
                     .spawn()?;
-                ui::run(path)?;
             }
+            ui::run(path)?;
         }
         Some(other) => anyhow::bail!("Неизвестный аргумент: {other}; см. --help"),
     }
@@ -125,6 +125,7 @@ fn daemon(path: std::path::PathBuf, force_ibus: bool) -> Result<()> {
             let mut state = shared.lock().unwrap();
             state.engine = punto_rs::engine::Engine::new(&state.config);
             state.actions.clear();
+            state.active_hotkeys.clear();
             state.connect_shortcuts = false;
             state.connected = false;
             state.focused = false;

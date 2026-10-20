@@ -189,6 +189,9 @@ impl Config {
         }
         let mut seen = Vec::new();
         for binding in &self.hotkeys {
+            if binding.keys.is_empty() {
+                continue;
+            }
             let key = Hotkey::parse(&binding.keys)?;
             if seen.contains(&key) {
                 bail!("Повтор горячей клавиши: {}", binding.keys);
@@ -243,6 +246,15 @@ pub(crate) fn config_home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disabled_hotkeys_can_repeat_and_never_match() {
+        let mut config = Config::default();
+        for binding in &mut config.hotkeys {
+            binding.keys.clear();
+        }
+        config.validate().unwrap();
+        assert!(config.action(32, 0).is_none());
+    }
     #[test]
     fn config_roundtrip_and_validation() {
         let dir = tempfile::tempdir().unwrap();

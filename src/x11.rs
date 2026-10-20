@@ -12,6 +12,7 @@ use x11rb::{
         Event,
         xkb::{self, ConnectionExt as _},
         xproto::{self, ConnectionExt as _},
+        xtest::ConnectionExt as _,
     },
     rust_connection::RustConnection,
 };
@@ -26,6 +27,8 @@ pub struct Keyboard {
     bindings: Vec<(Action, String)>,
     grabs: Vec<(u8, u16, Action)>,
     pub reported: Option<Layout>,
+    failures: Vec<String>,
+    bindings_valid: bool,
 }
 
 impl Keyboard {
@@ -46,6 +49,8 @@ impl Keyboard {
             bindings: vec![],
             grabs: vec![],
             reported: None,
+            failures: vec![],
+            bindings_valid: false,
         };
         keyboard.mapping()?;
         Ok(keyboard)
@@ -121,14 +126,142 @@ impl Keyboard {
         self.connection.flush()?;
         Ok(())
     }
+    /// Plan against the existing XKB groups; never rewrite the user's keymap.
+    pub fn typing_plan(&self, text: &str) -> Result<Vec<(Layout, u8, bool)>> {
+        anyhow::ensure!(
+            text.chars().count() <= 4096,
+            "Слишком большой фрагмент для клавиатурной замены"
+        );
+        anyhow::ensure!(
+            !text.chars().any(char::is_control),
+            "Клавиатурная замена не поддерживает управляющие символы"
+        );
+        let map = self
+            .connection
+            .xkb_get_map(
+                xkb::ID::USE_CORE_KBD.into(),
+                xkb::MapPart::KEY_SYMS,
+                0u16.into(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0u16.into(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )?
+            .reply()?;
+        let symbols = map.map.syms_rtrn.context("XKB не вернул символы клавиш")?;
+        text.chars()
+            .map(|ch| {
+                for layout in [Layout::En, Layout::Ru] {
+                    let Some(group) = self.groups.iter().position(|name| match layout {
+                        Layout::En => matches!(name.as_str(), "us" | "gb"),
+                        Layout::Ru => name == "ru",
+                    }) else {
+                        continue;
+                    };
+                    for (index, key) in symbols.iter().enumerate() {
+                        let group = if group >= usize::from(key.group_info & 15) {
+                            0
+                        } else {
+                            group
+                        };
+                        for shift in 0..=1 {
+                            if key
+                                .syms
+                                .get(group * usize::from(key.width) + shift)
+                                .is_some_and(|symbol| {
+                                    xkeysym::Keysym::new(*symbol).key_char() == Some(ch)
+                                })
+                            {
+                                return Ok((layout, map.first_key_sym + index as u8, shift != 0));
+                            }
+                        }
+                    }
+                }
+                anyhow::bail!("Символ {ch:?} отсутствует в настроенных раскладках; текст сохранён")
+            })
+            .collect()
+    }
+    pub fn input_focus(&self) -> Result<u32> {
+        Ok(self.connection.get_input_focus()?.reply()?.focus)
+    }
+    pub fn idle(&self) -> Result<()> {
+        let state = self
+            .connection
+            .xkb_get_state(xkb::ID::USE_CORE_KBD.into())?
+            .reply()?;
+        anyhow::ensure!(
+            u16::from(state.mods) & 79 == 0,
+            "Отпустите модификаторы и выключите Caps Lock перед преобразованием"
+        );
+        let keys = self.connection.query_keymap()?.reply()?;
+        anyhow::ensure!(
+            keys.keys.iter().all(|byte| *byte == 0),
+            "Дождитесь отпускания клавиш"
+        );
+        Ok(())
+    }
+    pub fn type_key(&self, code: u8, shift: bool) -> Result<()> {
+        let shift_code = (0..self.keys.len() / self.width)
+            .find(|i| self.symbols(self.first + *i as u8).contains(&0xffe1))
+            .map(|i| self.first + i as u8)
+            .context("Нет клавиши Shift")?;
+        if shift {
+            self.fake_key(shift_code, true)?;
+        }
+        let result = self
+            .fake_key(code, true)
+            .and_then(|()| self.fake_key(code, false));
+        if shift {
+            self.fake_key(shift_code, false)?;
+        }
+        self.connection.flush()?;
+        result
+    }
+    fn fake_key(&self, code: u8, pressed: bool) -> Result<()> {
+        self.connection
+            .xtest_fake_input(
+                if pressed {
+                    xproto::KEY_PRESS_EVENT
+                } else {
+                    xproto::KEY_RELEASE_EVENT
+                },
+                code,
+                x11rb::CURRENT_TIME,
+                self.root,
+                0,
+                0,
+                0,
+            )?
+            .check()?;
+        Ok(())
+    }
+    pub fn backspace(&self) -> Result<()> {
+        let code = (0..self.keys.len() / self.width)
+            .find(|i| self.symbols(self.first + *i as u8).contains(&0xff08))
+            .map(|i| self.first + i as u8)
+            .context("Нет Backspace")?;
+        self.type_key(code, false)
+    }
     pub fn bind(&mut self, config: &Config) -> Result<Vec<String>> {
         let bindings: Vec<_> = config
             .hotkeys
             .iter()
+            .filter(|binding| !binding.keys.is_empty())
             .map(|b| (b.action, b.keys.clone()))
             .collect();
-        if self.bindings == bindings {
-            return Ok(vec![]);
+        if self.bindings_valid && self.bindings == bindings {
+            return Ok(self.failures.clone());
         }
         for (key, modifiers, _) in self.grabs.drain(..) {
             self.connection
@@ -178,10 +311,15 @@ impl Keyboard {
             }
         }
         self.bindings = bindings;
+        self.bindings_valid = true;
         self.connection.flush()?;
         failures.sort();
         failures.dedup();
+        self.failures = failures.clone();
         Ok(failures)
+    }
+    pub fn rebind(&mut self) {
+        self.bindings_valid = false;
     }
     fn symbols(&self, code: u8) -> &[u32] {
         let start = usize::from(code.saturating_sub(self.first)) * self.width;
@@ -203,7 +341,7 @@ impl Keyboard {
                 }
                 Event::MappingNotify(_) => {
                     self.mapping()?;
-                    self.bindings.clear();
+                    self.rebind();
                 }
                 _ => {}
             }

@@ -91,6 +91,11 @@ with sandbox as temp:
             call('ConnectShortcuts')
             pump(lambda: 'подключены через портал' in call('Status')[3])
         assert not owner('org.freedesktop.IBus'), 'Native backend started IBus'
+        runtime = call('RuntimeInfo')
+        duplicate = subprocess.run([sys.argv[1], '--daemon'], capture_output=True, timeout=5)
+        assert duplicate.returncode != 0 and call('RuntimeInfo') == runtime, 'Second daemon replaced the original'
+        if not driver:
+            assert call('HotkeyAvailable', '(s)', ('Ctrl+Alt+Space',))[0], 'Own shortcut reported occupied'
         # Deliver physical keycodes: XKB chooses the existing system group.
         xlib = ctypes.CDLL('libX11.so.6')
         xtest = ctypes.CDLL('libXtst.so.6')
@@ -101,6 +106,22 @@ with sandbox as temp:
         xlib.XKeysymToKeycode.restype = ctypes.c_ubyte
         xlib.XFlush.argtypes = [ctypes.c_void_p]
         xtest.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+        if not driver:
+            xlib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+            xlib.XDefaultRootWindow.restype = ctypes.c_ulong
+            xlib.XGrabKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+            xlib.XUngrabKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_ulong]
+            root = xlib.XDefaultRootWindow(display)
+            code = xlib.XKeysymToKeycode(display, 0xffc9)  # F12
+            xlib.XGrabKey(display, code, 12, root, False, 1, 1)
+            xlib.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            xlib.XSync(display, False)
+            for _ in range(2):
+                assert not call('HotkeyAvailable', '(s)', ('Ctrl+Alt+F12',))[0], 'External grab was missed'
+            xlib.XUngrabKey(display, code, 12, root)
+            xlib.XSync(display, False)
+            assert call('HotkeyAvailable', '(s)', ('Ctrl+Alt+F12',))[0]
+            print('Single daemon and repeated hotkey conflict probes OK', flush=True)
         def physical(text):
             for char in text:
                 code = xlib.XKeysymToKeycode(display, ord(char))

@@ -2188,7 +2188,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "punto-rs"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "atspi-proxies",
@@ -2200,6 +2200,7 @@ dependencies = [
  "tempfile",
  "toml",
  "x11rb",
+ "xkeysym",
  "zbus",
  "zbus_xml",
 ]
