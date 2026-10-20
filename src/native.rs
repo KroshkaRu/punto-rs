@@ -63,10 +63,14 @@ impl Target {
             return Ok(false);
         }
         let states = accessible.get_state()?;
-        Ok(states.contains(State::Focused)
+        let interfaces = accessible.get_interfaces()?;
+        let x11 = std::env::var("XDG_SESSION_TYPE").as_deref() != Ok("wayland")
+            && std::env::var_os("DISPLAY").is_some();
+        Ok((interfaces.contains(Interface::EditableText) || x11)
+            && states.contains(State::Focused)
             && states.contains(State::Editable)
             && !states.contains(State::Defunct)
-            && accessible.get_interfaces()?.contains(Interface::Text))
+            && interfaces.contains(Interface::Text))
     }
     fn snapshot(&self, connection: &Connection) -> Result<Surrounding> {
         ensure!(

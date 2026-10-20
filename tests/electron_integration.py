@@ -36,6 +36,7 @@ def editable(node):
 
 with tempfile.TemporaryDirectory(prefix='punto-electron-') as directory:
     os.environ.update(ACCESSIBILITY_ENABLED='1', HOME=directory, XDG_CONFIG_HOME=directory, GTK_IM_MODULE='xim', XMODIFIERS='@im=none', NO_AT_BRIDGE='0')
+    os.environ['XDG_SESSION_TYPE'] = os.environ.get('PUNTO_TEST_SESSION', 'x11')
     config = pathlib.Path(directory) / 'punto-rs'
     config.mkdir()
     (config / 'config.toml').write_text('backend = "native"\nremember_layout = true\n')
@@ -61,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix='punto-electron-') as directory:
     def call(method, args=None):
         return bus.call_sync('org.punto.Switcher', '/org/punto/Switcher', 'org.punto.Switcher', method, args, None, Gio.DBusCallFlags.NONE, 1000, None).unpack()
     host = subprocess.Popen([sys.executable, str(pathlib.Path(__file__).with_name('tray_host.py'))])
-    editor = subprocess.Popen([str(fixture / 'electron'), '--no-sandbox', '--disable-gpu', '--force-renderer-accessibility', '--user-data-dir=' + directory + '/profile'], stderr=open(directory + '/electron.log', 'w'))
+    editor = subprocess.Popen([str(fixture / 'electron'), '--no-sandbox', '--disable-gpu', '--ozone-platform=x11', '--force-renderer-accessibility', '--user-data-dir=' + directory + '/profile'], stderr=open(directory + '/electron.log', 'w'))
     daemon = subprocess.Popen([sys.argv[1], '--daemon'])
     try:
         field = None
@@ -88,29 +89,35 @@ with tempfile.TemporaryDirectory(prefix='punto-electron-') as directory:
                         time.sleep(0.08)  # A real user keeps Space held while AT-SPI publishes insertion.
                 xlib.XFlush(display)
                 time.sleep(0.04)
-        physical('ghbdtn ')
-        pump(lambda: text() == '😀 привет ')
-        physical('lf ')
-        pump(lambda: text() == '😀 привет да ')
-        physical('we ')
-        pump(lambda: text() == '😀 привет да we ')
-        physical('we ')
-        pump(lambda: text() == '😀 привет да we we ')
-        assert subprocess.check_output(['setxkbmap', '-query']) == mapping
-        physical('lf ')
-        pump(lambda: text() == '😀 привет да we we да ')
-        call('ActivateAction', GLib.Variant('(s)', ('undo',)))
-        pump(lambda: text() == '😀 привет да we we lf ')
-        subprocess.run(['xdotool', 'key', 'ctrl+shift'], check=True)
-        physical('lf ')
-        pump(lambda: text().endswith('да '))
-        assert text().startswith('😀 ')
-        subprocess.run(['xdotool', 'key', 'Tab'], check=True)
-        time.sleep(0.2)
-        physical('ghbdtn ')
-        pump(lambda: not call('Status')[1])
-        assert text().endswith('да '), 'Password input changed the previous text field'
-        print('Electron Text-only: corrections, following layout, undo and system Ctrl+Shift OK', flush=True)
+        if os.environ['XDG_SESSION_TYPE'] == 'wayland':
+            physical('ghbdtn ')
+            pump(lambda: text() == '😀 ghbdtn ')
+            assert not call('Status')[1], 'Text-only field advertised unsupported Wayland editing'
+            print('Wayland backend refuses Text-only editing without X11 fallback OK', flush=True)
+        else:
+            physical('ghbdtn ')
+            pump(lambda: text() == '😀 привет ')
+            physical('lf ')
+            pump(lambda: text() == '😀 привет да ')
+            physical('we ')
+            pump(lambda: text() == '😀 привет да we ')
+            physical('we ')
+            pump(lambda: text() == '😀 привет да we we ')
+            assert subprocess.check_output(['setxkbmap', '-query']) == mapping
+            physical('lf ')
+            pump(lambda: text() == '😀 привет да we we да ')
+            call('ActivateAction', GLib.Variant('(s)', ('undo',)))
+            pump(lambda: text() == '😀 привет да we we lf ')
+            subprocess.run(['xdotool', 'key', 'ctrl+shift'], check=True)
+            physical('lf ')
+            pump(lambda: text().endswith('да '))
+            assert text().startswith('😀 ')
+            subprocess.run(['xdotool', 'key', 'Tab'], check=True)
+            time.sleep(0.2)
+            physical('ghbdtn ')
+            pump(lambda: not call('Status')[1])
+            assert text().endswith('да '), 'Password input changed the previous text field'
+            print('Electron Text-only: corrections, following layout, undo and system Ctrl+Shift OK', flush=True)
     except BaseException:
         print('Actual text:', repr(text()) if field else None, 'Daemon exit:', daemon.poll(), flush=True)
         if daemon.poll() is None: print('Status:', call('Status'), flush=True)

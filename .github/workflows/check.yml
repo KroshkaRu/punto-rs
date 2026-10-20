@@ -48,6 +48,8 @@ jobs:
         run: PUNTO_TEST_ELECTRON=/tmp/electron-runtime/electron xvfb-run -a dbus-run-session -- python3 tests/electron_integration.py target/debug/punto-rs
       - if: matrix.ubuntu == '24.04'
         run: PUNTO_TEST_RICH=1 PUNTO_TEST_ELECTRON=/tmp/electron-runtime/electron xvfb-run -a dbus-run-session -- python3 tests/electron_integration.py target/debug/punto-rs
+      - if: matrix.ubuntu == '24.04'
+        run: PUNTO_TEST_SESSION=wayland PUNTO_TEST_ELECTRON=/tmp/electron-runtime/electron xvfb-run -a dbus-run-session -- python3 tests/electron_integration.py target/debug/punto-rs
       - if: matrix.ubuntu == '22.04'
         run: ./scripts/build-deb.sh --native
       - if: matrix.ubuntu == '22.04'
