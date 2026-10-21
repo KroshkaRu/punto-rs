@@ -638,6 +638,33 @@ mod tests {
         );
     }
     #[test]
+    fn pause_forces_an_unknown_word_without_dictionary_or_smart() {
+        let (mut e, mut c, d) = setup();
+        c.smart = false;
+        assert!(d.correct("qzxqzx", Layout::En, &c).is_none());
+        type_text(&mut e, &mut c, &d, "qzxqzx");
+        assert_eq!(
+            e.process(0xff13, 0, &mut c, &d),
+            (true, vec![Effect::Preedit("йячйяч".into())])
+        );
+        assert_eq!(e.layout, Layout::Ru);
+        assert_eq!(
+            e.action(Action::Undo, &mut c),
+            vec![Effect::Preedit("qzxqzx".into())]
+        );
+        c.automatic = false;
+        e.buffer.clear();
+        e.set_surrounding(Surrounding {
+            text: "qzxqzx".into(),
+            cursor: 6,
+            anchor: 6,
+        });
+        assert!(
+            e.action(Action::ConvertWord, &mut c)
+                .contains(&Effect::Commit("йячйяч".into()))
+        );
+    }
+    #[test]
     fn no_surrounding_or_invalid_positions_are_safe() {
         let (mut e, mut c, _) = setup();
         e.set_surrounding(Surrounding {

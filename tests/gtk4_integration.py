@@ -89,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='punto-gtk4-') as directory:
         pump(lambda: text() == 'привет да we ')
         physical('we ')
         pump(lambda: text() == 'привет да we we ')
-        for source, expected in [('ghbdtn', 'привет'), ('руддщ', 'hello'), ('k.,k.', 'люблю'), ('ghbdtn ', 'привет '), ('hello ghbdtn', 'hello привет'), ('😀 ghbdtn  ', '😀 привет  '), ('ghbdtn\n', 'привет\n')]:
+        for source, expected in [('qzxqzx', 'йячйяч'), ('ghbdtn', 'привет'), ('руддщ', 'hello'), ('k.,k.', 'люблю'), ('ghbdtn ', 'привет '), ('hello ghbdtn', 'hello привет'), ('😀 ghbdtn  ', '😀 привет  '), ('ghbdtn\n', 'привет\n')]:
             Atspi.EditableText.set_text_contents(field.get_editable_text_iface(), source)
             subprocess.run(['xdotool', 'key', 'ctrl+End'], check=True)
             pump(lambda: text() == source)

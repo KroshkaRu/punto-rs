@@ -115,8 +115,24 @@ impl Dictionaries {
         } else {
             convert_from(word, layout)
         };
-        if text == word || !self.check(&text, layout.other(), config) {
+        if text == word {
             return None;
+        }
+        if !self.check(&text, layout.other(), config) {
+            if !config.smart || length <= 3 {
+                return None;
+            }
+            let (en, ru) = match layout {
+                Layout::En => (word, text.as_str()),
+                Layout::Ru => (text.as_str(), word),
+            };
+            let probability = crate::smart::english_probability(en, ru)?;
+            if !match layout {
+                Layout::En => probability < 0.5,
+                Layout::Ru => probability > 0.5,
+            } {
+                return None;
+            }
         }
         Some(Correction {
             text,
@@ -168,6 +184,55 @@ impl Dictionaries {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn smart_recognizes_unknown_words_in_both_layouts_and_can_be_disabled() {
+        let dictionaries = Dictionaries::fixture();
+        let mut config = Config::default();
+        for (word, layout, expected) in [
+            ("ghbdtnbrb", Layout::En, "приветики"),
+            ("руддщч", Layout::Ru, "hellox"),
+        ] {
+            assert!(!dictionaries.check(word, layout, &config));
+            assert!(!dictionaries.check(expected, layout.other(), &config));
+            let correction = dictionaries.correct(word, layout, &config).unwrap();
+            assert_eq!(correction.text, expected);
+            assert_eq!(correction.layout, layout.other());
+        }
+        for (word, layout) in [
+            ("hellox", Layout::En),
+            ("приветики", Layout::Ru),
+            ("ntc", Layout::En),
+        ] {
+            assert!(dictionaries.correct(word, layout, &config).is_none());
+        }
+        config.smart = false;
+        assert!(
+            dictionaries
+                .correct("ghbdtnbrb", Layout::En, &config)
+                .is_none()
+        );
+        assert_eq!(
+            dictionaries
+                .correct("ghbdtn", Layout::En, &config)
+                .unwrap()
+                .text,
+            "привет"
+        );
+        config.smart = true;
+        config.ignored_words.push("ghbdtnbrb".into());
+        assert!(
+            dictionaries
+                .correct("ghbdtnbrb", Layout::En, &config)
+                .is_none()
+        );
+        config.ignored_words.clear();
+        config.english_words.push("ghbdtnbrb".into());
+        assert!(
+            dictionaries
+                .correct("ghbdtnbrb", Layout::En, &config)
+                .is_none()
+        );
+    }
     #[test]
     fn english_pronoun_i_is_not_an_abbreviation() {
         let dictionaries = Dictionaries::fixture();

@@ -136,6 +136,8 @@ impl Settings {
             ui.radio_value(&mut self.config.initial_layout, Layout::En, "EN");
             ui.radio_value(&mut self.config.initial_layout, Layout::Ru, "RU");
         });
+        ui.checkbox(&mut self.config.smart, "Smart — определять язык неизвестных слов по тройкам букв")
+            .on_hover_text("Для слов длиннее трёх букв, неизвестных обоим словарям. Используется готовая статистика; при равных оценках слово сохраняется. Pause принудительно меняет раскладку независимо от Smart.");
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("Обработка ввода:");

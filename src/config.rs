@@ -55,7 +55,7 @@ impl Action {
             Self::ToggleAuto => "Автопереключение вкл./выкл.",
             Self::SwitchLayout => "Переключить RU / EN",
             Self::ConvertSelection => "Исправить выделенный текст",
-            Self::ConvertWord => "Исправить последнее слово",
+            Self::ConvertWord => "Принудительно исправить последнее слово",
             Self::Undo => "Отменить преобразование",
             Self::ChangeCase => "Изменить регистр выделения",
             Self::Transliterate => "Транслитерация выделения",
@@ -92,6 +92,7 @@ impl AppRule {
 pub struct Config {
     pub backend: Backend,
     pub automatic: bool,
+    pub smart: bool,
     pub x11_unverified: bool,
     pub initial_layout: Layout,
     pub remember_layout: bool,
@@ -114,6 +115,7 @@ impl Default for Config {
         Self {
             backend: Backend::Auto,
             automatic: true,
+            smart: true,
             x11_unverified: true,
             initial_layout: Layout::En,
             remember_layout: true,
@@ -286,11 +288,17 @@ mod tests {
         fs::write(&path, "automatic = true\n").unwrap();
         let mut config = Config::load(&path).unwrap();
         assert!(
+            config.smart,
+            "Old configurations must enable Smart by default"
+        );
+        config.smart = false;
+        assert!(
             config.x11_unverified,
             "Old configurations must receive the general X11 backend"
         );
         config.save(&path).unwrap();
         assert!(Config::load(&path).unwrap().automatic);
+        assert!(!Config::load(&path).unwrap().smart);
         config.hotkeys[1].keys = config.hotkeys[0].keys.clone();
         assert!(config.save(&path).is_err());
         assert!(Config::load(&path).is_ok());

@@ -13,6 +13,7 @@ pub mod service;
 pub mod session_layout;
 pub mod setup;
 pub mod shortcuts;
+mod smart;
 pub mod sound;
 pub mod x11;
 pub mod x11_input;
