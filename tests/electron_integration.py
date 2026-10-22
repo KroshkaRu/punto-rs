@@ -187,6 +187,22 @@ with contextlib.ExitStack() as cleanup, tempfile.TemporaryDirectory(prefix='punt
             pump(lambda: text() == '')
             call('SetLayout', GLib.Variant('(s)', ('EN',)))
             print('Pause: repeated last-word conversion, held key and undo OK', flush=True)
+            for tail, backspace in [(' ', False), ('  ', False), ('! ', False), ('', True)]:
+                physical('ghbdtn')
+                if tail.startswith('!'):
+                    subprocess.run(['xdotool', 'key', 'exclam'], check=True)
+                physical(' ' if backspace else tail.lstrip('!'))
+                if backspace:
+                    subprocess.run(['xdotool', 'key', 'BackSpace'], check=True)
+                pump(lambda: text() == 'ghbdtn' + tail)
+                subprocess.run(['xdotool', 'key', 'Pause'], check=True)
+                pump(lambda: text() == 'привет' + tail)
+                subprocess.run(['xdotool', 'key', 'ctrl+BackSpace'], check=True)
+                pump(lambda: text() == 'ghbdtn' + tail)
+                subprocess.run(['xdotool', 'key', 'ctrl+a', 'BackSpace'], check=True)
+                pump(lambda: text() == '')
+                call('SetLayout', GLib.Variant('(s)', ('EN',)))
+            print('Pause: trailing spaces, punctuation and deleted space preserve the last word OK', flush=True)
             physical('privet')
             pump(lambda: text() == 'privet')
             subprocess.run(['xdotool', 'key', 'ctrl+a', 'keydown', 'Alt_L', 'keydown', 'Next'], check=True)
@@ -299,7 +315,7 @@ with contextlib.ExitStack() as cleanup, tempfile.TemporaryDirectory(prefix='punt
                 chord('z')
                 pump(lambda: text() == 'hello привет ')
                 print('Generic X11: mixed RU/EN selection and undo preserve each script OK', flush=True)
-                for source, language, expected in [('ghjdthz. ', 'EN', 'проверяю '), ('ghbdtn. ', 'EN', 'привет. ')]:
+                for source, language, expected in [('ghjdthz. ', 'EN', 'проверяю '), ('ghbdtn. ', 'EN', 'привет. '), ('j ', 'EN', 'о ')]:
                     subprocess.run(['xdotool', 'key', 'ctrl+a', 'BackSpace'], check=True)
                     call('SetLayout', GLib.Variant('(s)', (language,)))
                     physical(source)

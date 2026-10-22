@@ -154,6 +154,10 @@ with sandbox as temp:
         clipboard = Gtk.Clipboard.get_default(window.get_display())
         clipboard.set_text('preserve native clipboard', -1)
         text = lambda: buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+        physical('j ')
+        pump(lambda: text() == 'о ' and call('Status')[0] == 'RU')
+        buffer.set_text('')
+        call('SetLayout', '(s)', ('EN',))
         physical('lf ')
         pump(lambda: text() == 'да ' and call('Status')[0] == 'RU')
         physical('lf ')
@@ -246,6 +250,9 @@ with sandbox as temp:
             if inserted == 'привет':
                 interrupted.append(True)
                 password.grab_focus()
+                # GTK may publish ATK focus at idle; finish that transition before InsertText returns.
+                while GLib.MainContext.default().pending():
+                    GLib.MainContext.default().iteration(False)
         handler = buffer.connect_after('insert-text', interrupt_insert)
         try:
             call('ActivateAction', '(s)', ('convert_word',))
@@ -255,6 +262,7 @@ with sandbox as temp:
         finally:
             buffer.disconnect(handler)
             view.grab_focus()
+        pump(lambda: call('Status')[1])
         if not driver:
             for symbol, suffix in [(32, ' '), (0xff0d, '\n')]:
                 buffer.set_text('ghbdtn')

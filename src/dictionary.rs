@@ -35,7 +35,11 @@ impl Dictionaries {
             .iter()
             .any(|v| v.to_lowercase() == word.to_lowercase())
             || match layout {
-                Layout::En => self.english.check(word) || self.english.check(&word.to_lowercase()),
+                // Hunspell lists letter names such as j; only a/I are single-letter English words.
+                Layout::En => {
+                    (word.len() != 1 || matches!(word, "a" | "A" | "i" | "I"))
+                        && (self.english.check(word) || self.english.check(&word.to_lowercase()))
+                }
                 Layout::Ru => self.russian.check(word) || self.russian.check(&word.to_lowercase()),
             }
     }
@@ -171,10 +175,10 @@ fn load(base: &Path) -> Result<Dictionary> {
 impl Dictionaries {
     pub fn fixture() -> Self {
         Self {
-            english: Dictionary::new("SET UTF-8", "12\nhello\nworld\ntest\ngood\nwe\nus\nto\nin\nit\nof\nvs\nI").unwrap(),
+            english: Dictionary::new("SET UTF-8", "13\nhello\nworld\ntest\ngood\nwe\nus\nto\nin\nit\nof\nvs\nI\nj").unwrap(),
             russian: Dictionary::new(
                 "SET UTF-8",
-                "19\nпривет\nмир\nтест\nдобро\nработа\nпроверяю\nлюблю\nжизнь\nхочу\nда\nне\nон\nиз\nна\nпо\nже\nмы\nя\nи",
+                "20\nпривет\nмир\nтест\nдобро\nработа\nпроверяю\nлюблю\nжизнь\nхочу\nда\nне\nон\nиз\nна\nпо\nже\nмы\nя\nи\nо",
             )
             .unwrap(),
         }
@@ -274,6 +278,7 @@ mod tests {
             ("bp", Layout::En, "из"),
             (";t", Layout::En, "же"),
             ("z", Layout::En, "я"),
+            ("j", Layout::En, "о"),
         ] {
             let correction = dictionaries.correct(word, source, &config).unwrap();
             assert_eq!(correction.text, expected, "{word}");
@@ -281,6 +286,8 @@ mod tests {
         }
         assert!(dictionaries.correct("vs", Layout::En, &config).is_none());
         assert!(dictionaries.correct("мы", Layout::Ru, &config).is_none());
+        config.english_words.push("j".into());
+        assert!(dictionaries.correct("j", Layout::En, &config).is_none());
         config.ignored_words.push("цу".into());
         assert!(dictionaries.correct("цу", Layout::Ru, &config).is_none());
         config.minimum_word = 6;

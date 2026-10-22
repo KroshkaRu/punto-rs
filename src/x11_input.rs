@@ -299,12 +299,14 @@ impl InputBackend {
                         continue;
                     }
                     self.undo = None;
-                    self.last_word = None;
                     if mods & 0xcc != 0 {
                         self.clear();
                         continue;
                     }
                     if symbol == 0xff08 {
+                        if self.buffer.is_empty() {
+                            self.buffer = self.last_word.take().unwrap_or_default();
+                        }
                         self.buffer.pop();
                         self.pending = false;
                         continue;
@@ -316,11 +318,17 @@ impl InputBackend {
                         self.clear();
                         continue;
                     };
-                    if self.pending {
+                    if self.pending && !layout::delimiter(ch) {
                         self.buffer.clear();
-                        self.pending = false;
-                        self.released = false;
                     }
+                    // Keep the completed word while more delimiters are typed after it.
+                    if self.buffer.is_empty() && layout::delimiter(ch) {
+                        self.buffer = self.last_word.take().unwrap_or_default();
+                    } else {
+                        self.last_word = None;
+                    }
+                    self.pending = false;
+                    self.released = false;
                     self.buffer.push(ch);
                     if self.buffer.len() > 1024 {
                         self.clear();
@@ -328,7 +336,7 @@ impl InputBackend {
                     if ch == ' ' {
                         self.pending = true;
                     } else if layout::delimiter(ch) {
-                        self.buffer.clear();
+                        self.last_word = Some(std::mem::take(&mut self.buffer));
                     }
                 }
                 Input::Barrier => unreachable!(),
@@ -371,9 +379,11 @@ impl InputBackend {
     }
     fn correct(&mut self, keyboard: &Keyboard, shared: &Shared) -> Result<()> {
         let original = std::mem::take(&mut self.buffer);
-        let Some(word) = original.strip_suffix(' ').filter(|word| !word.is_empty()) else {
+        let word = original.trim_end_matches(layout::delimiter);
+        if word.is_empty() {
             return Ok(());
-        };
+        }
+        let tail = &original[word.len()..];
         self.last_word = Some(original.clone());
         let old_layout = keyboard.layout()?.context("Неизвестная раскладка")?;
         let correction = {
@@ -388,7 +398,7 @@ impl InputBackend {
             )
         };
         if let Some(correction) = correction {
-            let replacement = correction.text + " ";
+            let replacement = correction.text + tail;
             if replacement != original {
                 self.replace(
                     keyboard,
